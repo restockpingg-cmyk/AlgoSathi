@@ -19,3 +19,5 @@ logs/*.log
 
 .pytest_cache/
 .mypy_cache/
+
+.vercel
