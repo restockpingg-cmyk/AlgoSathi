@@ -1,0 +1,23 @@
+# Non-secret AlgoSathi configuration. Secrets (API keys, live-trading confirmation) live in .env.
+
+mode: paper # paper | live
+
+symbol: INFY
+exchange: NSE_EQ
+
+strategy:
+  name: sma_crossover
+  fast_period: 9
+  slow_period: 21
+  ma_type: sma # sma | ema
+
+risk:
+  order_quantity: 1
+  max_daily_loss: 5000
+  max_open_positions: 1
+
+paper:
+  starting_cash: 100000
+
+polling_interval_seconds: 60
+candle_interval_minutes: 5

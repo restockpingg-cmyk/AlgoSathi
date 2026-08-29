@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# secrets
+.env
+
+# runtime data
+data/*.db
+data/*.json
+data/**/*.csv
+logs/*.log
+
+# keep folders in git but ignore their contents
+!data/.gitkeep
+!logs/.gitkeep
+
+.pytest_cache/
+.mypy_cache/
