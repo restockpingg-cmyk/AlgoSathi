@@ -1,0 +1,63 @@
+"""Pulls historical candles from Upstox and upserts them into Supabase's `candles` table, so
+the web backtester (which has no Upstox access of its own) has data to run against.
+
+Run locally, after a daily Upstox login (see README's "Going live" section):
+
+    .venv\\Scripts\\python scripts\\sync_candles.py --symbol INFY --interval 5 --lookback-days 60
+
+Requires SUPABASE_URL / SUPABASE_SERVICE_KEY in .env.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from algosathi.auth.upstox_auth import get_valid_token
+from algosathi.config import get_settings
+from algosathi.market_data.upstox_historical import UpstoxHistoricalProvider
+from algosathi.persistence.supabase_client import get_client
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Sync Upstox candles into Supabase")
+    parser.add_argument("--symbol", required=True)
+    parser.add_argument("--exchange", default="NSE_EQ")
+    parser.add_argument("--interval", type=int, default=5, help="candle interval in minutes")
+    parser.add_argument("--lookback-days", type=int, default=60)
+    args = parser.parse_args()
+
+    settings = get_settings()
+    client = get_client(settings)
+    if client is None:
+        raise SystemExit("SUPABASE_URL / SUPABASE_SERVICE_KEY are not set in .env")
+
+    token = get_valid_token(settings)
+    provider = UpstoxHistoricalProvider(access_token=token, lookback_days=args.lookback_days)
+    candles = provider.get_recent_candles(
+        symbol=args.symbol, exchange=args.exchange, interval_minutes=args.interval
+    )
+
+    rows = [
+        {
+            "symbol": args.symbol,
+            "timeframe_minutes": args.interval,
+            "timestamp": row.timestamp.isoformat(),
+            "open": float(row.open),
+            "high": float(row.high),
+            "low": float(row.low),
+            "close": float(row.close),
+            "volume": int(row.volume),
+        }
+        for row in candles.itertuples()
+    ]
+
+    if not rows:
+        print("No candles returned; nothing to sync.")
+        return
+
+    client.table("candles").upsert(rows, on_conflict="symbol,timeframe_minutes,timestamp").execute()
+    print(f"Synced {len(rows)} candles for {args.symbol} ({args.interval}m) to Supabase.")
+
+
+if __name__ == "__main__":
+    main()

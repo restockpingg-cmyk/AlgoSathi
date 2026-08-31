@@ -1,6 +1,7 @@
 import { equityCurve, summarizeBySymbol } from "@/lib/analytics";
 import { fetchTrades } from "@/lib/supabase";
 import { EquityChart } from "./equity-chart";
+import { Nav } from "./nav";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +20,10 @@ export default async function Home() {
   if (trades.length === 0) {
     return (
       <main className="mx-auto max-w-5xl flex-1 px-6 py-16">
-        <h1 className="text-xl font-semibold">AlgoSathi</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-semibold">AlgoSathi</h1>
+          <Nav current="dashboard" />
+        </div>
         <p className="mt-4 text-neutral-400">
           No trades recorded yet. Run the bot (paper or live) with Supabase sync configured to
           see activity here.
@@ -35,7 +39,10 @@ export default async function Home() {
 
   return (
     <main className="mx-auto max-w-5xl flex-1 px-6 py-10">
-      <h1 className="text-xl font-semibold">AlgoSathi</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold">AlgoSathi</h1>
+        <Nav current="dashboard" />
+      </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatTile

@@ -5,29 +5,13 @@ from loguru import logger
 from algosathi.config import Settings
 from algosathi.core.enums import Mode
 from algosathi.core.models import Fill
-
-_client = None
-_client_url = None
-
-
-def _get_client(settings: Settings):
-    global _client, _client_url
-    url = settings.secrets.supabase_url
-    key = settings.secrets.supabase_service_key
-    if not url or not key:
-        return None
-    if _client is None or _client_url != url:
-        from supabase import create_client
-
-        _client = create_client(url, key)
-        _client_url = url
-    return _client
+from algosathi.persistence.supabase_client import get_client
 
 
 def push_fill(fill: Fill, mode: Mode, settings: Settings) -> None:
     """Best-effort sync of one fill to Supabase for the online dashboard. Never raises —
     a Supabase/network hiccup must not interrupt the trading loop."""
-    client = _get_client(settings)
+    client = get_client(settings)
     if client is None:
         return
     try:

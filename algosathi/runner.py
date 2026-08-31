@@ -11,12 +11,14 @@ from algosathi.broker.base import BrokerAdapter
 from algosathi.broker.paper_broker import PaperBroker
 from algosathi.config import Settings, get_settings
 from algosathi.core.enums import Mode
-from algosathi.core.models import Signal
 from algosathi.logging_setup import setup_logging
 from algosathi.persistence.db import get_session_factory, record_fill
+from algosathi.persistence.supabase_strategies import fetch_active_strategy
 from algosathi.persistence.supabase_sync import push_fill
 from algosathi.risk.risk_manager import RiskManager
+from algosathi.simulation import act_on_signal, simulate_candles
 from algosathi.strategy.base import Strategy
+from algosathi.strategy.rule_strategy import RuleStrategy
 from algosathi.strategy.sma_crossover import SmaCrossoverStrategy
 
 MARKET_OPEN = dtime(9, 15)
@@ -29,9 +31,20 @@ def is_market_open(now: datetime) -> bool:
 
 def build_strategy(settings: Settings) -> Strategy:
     cfg = settings.yaml.strategy
+    symbol = settings.yaml.symbol
+
+    if cfg.source == "supabase":
+        row = fetch_active_strategy(symbol, settings)
+        if row is None:
+            raise RuntimeError(
+                f"strategy.source is 'supabase' but no active strategy found for symbol "
+                f"{symbol!r} in the strategies table"
+            )
+        return RuleStrategy(symbol=symbol, definition=row["definition"])
+
     if cfg.name == "sma_crossover":
         return SmaCrossoverStrategy(
-            symbol=settings.yaml.symbol,
+            symbol=symbol,
             fast_period=cfg.fast_period,
             slow_period=cfg.slow_period,
             ma_type=cfg.ma_type,
@@ -67,35 +80,6 @@ def build_broker(settings: Settings) -> BrokerAdapter:
     return PaperBroker(starting_cash=settings.yaml.paper.starting_cash, trade_recorder=trade_recorder)
 
 
-def _act_on_signal(
-    signal: Signal | None,
-    strategy_symbol: str,
-    risk_manager: RiskManager,
-    broker: BrokerAdapter,
-    realized_pnl_today: float,
-) -> None:
-    if signal is None:
-        return
-
-    position = broker.get_position(strategy_symbol)
-    open_position_count = len(broker.get_positions())
-
-    order = risk_manager.evaluate(
-        signal,
-        position=position,
-        realized_pnl_today=realized_pnl_today,
-        open_position_count=open_position_count,
-    )
-    if order is None:
-        return
-
-    fill = broker.place_order(order)
-    logger.info(
-        f"{fill.symbol}: {fill.side.value.upper()} {fill.quantity} @ {fill.price:.2f} "
-        f"(signal: {signal.reason})"
-    )
-
-
 def run_replay(settings: Settings, candles: pd.DataFrame) -> PaperBroker:
     """Feed a historical OHLC DataFrame through the strategy/risk/broker pipeline one candle
     at a time, filling orders at the *next* candle's open to avoid look-ahead bias. Used for
@@ -109,13 +93,7 @@ def run_replay(settings: Settings, candles: pd.DataFrame) -> PaperBroker:
     symbol = settings.yaml.symbol
     logger.info(f"Starting replay for {symbol} over {len(candles)} candles")
 
-    for i in range(len(candles) - 1):
-        history = candles.iloc[: i + 1]
-        signal = strategy.on_candles(history)
-        if signal is not None:
-            next_open = candles.iloc[i + 1]["open"]
-            broker.update_market_price(symbol, float(next_open))
-            _act_on_signal(signal, symbol, risk_manager, broker, broker.realized_pnl)
+    simulate_candles(strategy, risk_manager, broker, symbol, candles)
 
     logger.info(
         f"Replay complete. realized_pnl={broker.realized_pnl:.2f} "
@@ -158,7 +136,7 @@ def run_live(settings: Settings) -> None:
             latest_close = float(candles.iloc[-1]["close"])
             if isinstance(broker, PaperBroker):
                 broker.update_market_price(symbol, latest_close)
-            _act_on_signal(signal, symbol, risk_manager, broker, getattr(broker, "realized_pnl", 0.0))
+            act_on_signal(signal, symbol, risk_manager, broker, getattr(broker, "realized_pnl", 0.0))
 
         time.sleep(settings.yaml.polling_interval_seconds)
 

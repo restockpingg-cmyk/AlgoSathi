@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { StrategyDefinition } from "./rule-engine";
 
 export type Trade = {
   id: number;
@@ -9,6 +10,17 @@ export type Trade = {
   price: number;
   timestamp: string;
   mode: string;
+};
+
+export type StrategyRow = {
+  id: number;
+  name: string;
+  symbol: string;
+  timeframe_minutes: number;
+  definition: StrategyDefinition;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 };
 
 export function getSupabase() {
@@ -28,6 +40,16 @@ export async function fetchTrades(): Promise<Trade[]> {
     .from("trades")
     .select("*")
     .order("timestamp", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function fetchStrategies(): Promise<StrategyRow[]> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from("strategies")
+    .select("*")
+    .order("created_at", { ascending: false });
   if (error) throw error;
   return data ?? [];
 }

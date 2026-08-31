@@ -17,6 +17,9 @@ class StrategyConfig(BaseModel):
     fast_period: int = 9
     slow_period: int = 21
     ma_type: str = "sma"
+    # "yaml" uses `name`/the fields above; "supabase" loads the active RuleStrategy
+    # definition for `symbol` from the strategies table instead (see web/app/builder).
+    source: str = "yaml"
 
 
 class RiskConfig(BaseModel):
