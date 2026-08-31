@@ -3,9 +3,12 @@ the web backtester (which has no Upstox access of its own) has data to run again
 
 Run locally, after a daily Upstox login (see README's "Going live" section):
 
-    .venv\\Scripts\\python scripts\\sync_candles.py --symbol INFY --interval 5 --lookback-days 60
+    .venv\\Scripts\\python scripts\\sync_candles.py --symbol INFY --interval 5 --lookback-days 28
 
-Requires SUPABASE_URL / SUPABASE_SERVICE_KEY in .env.
+Requires SUPABASE_URL / SUPABASE_SERVICE_KEY in .env. Upstox's v3 historical-candle API caps
+the date range per request depending on interval: ~1 month for 1-15 minute candles, ~1 quarter
+for 16-300 minute or 1-5 hour candles, no limit for daily/weekly/monthly. Run this repeatedly
+(e.g. daily via cron) to build up a longer history for backtesting.
 """
 
 from __future__ import annotations
@@ -23,7 +26,12 @@ def main() -> None:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--exchange", default="NSE_EQ")
     parser.add_argument("--interval", type=int, default=5, help="candle interval in minutes")
-    parser.add_argument("--lookback-days", type=int, default=60)
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=28,
+        help="stay under Upstox's per-request cap (~1 month for 1-15min candles)",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
