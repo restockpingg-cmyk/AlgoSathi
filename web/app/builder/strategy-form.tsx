@@ -210,6 +210,16 @@ export function StrategyForm() {
     conditions: [{ left: { indicator: "sma", period: 9 }, op: "crosses_below", right: { indicator: "sma", period: 21 } }],
   });
 
+  // Elliott Wave can't be expressed as a condition tree — it reasons about swing structure —
+  // so the builder switches between the visual rule editor and a parameter form.
+  const [strategyType, setStrategyType] = useState<"rule" | "elliott_wave">("rule");
+  const [elliott, setElliott] = useState({
+    zigzagPct: 0.5,
+    minRetracement: 0.382,
+    maxRetracement: 0.786,
+    targetExtension: 1.618,
+  });
+
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [backtestError, setBacktestError] = useState<string | null>(null);
   const [isBacktesting, setIsBacktesting] = useState(false);
@@ -226,7 +236,13 @@ export function StrategyForm() {
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ definition, symbol, timeframeMinutes }),
+        body: JSON.stringify({
+          definition,
+          strategyType,
+          params: strategyType === "elliott_wave" ? elliott : {},
+          symbol,
+          timeframeMinutes,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Backtest failed");
@@ -245,7 +261,23 @@ export function StrategyForm() {
       const res = await fetch("/api/strategies", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, symbol, timeframe_minutes: timeframeMinutes, definition }),
+        body: JSON.stringify({
+          name,
+          symbol,
+          timeframe_minutes: timeframeMinutes,
+          definition,
+          strategy_type: strategyType,
+          // The bot builds ElliottWaveStrategy(**params), so send the Python argument names.
+          params:
+            strategyType === "elliott_wave"
+              ? {
+                  zigzag_pct: elliott.zigzagPct,
+                  min_retracement: elliott.minRetracement,
+                  max_retracement: elliott.maxRetracement,
+                  target_extension: elliott.targetExtension,
+                }
+              : {},
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Save failed");
@@ -290,14 +322,64 @@ export function StrategyForm() {
             ))}
           </select>
         </label>
+
+        <label className="flex flex-col gap-1 text-sm text-neutral-400">
+          Strategy type
+          <select
+            className="rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100"
+            value={strategyType}
+            onChange={(e) => setStrategyType(e.target.value as "rule" | "elliott_wave")}
+          >
+            <option value="rule">Rule builder</option>
+            <option value="elliott_wave">Elliott Wave (wave 3)</option>
+          </select>
+        </label>
       </div>
 
-      <div className="rounded-lg border border-neutral-800 p-4">
-        <ConditionGroupEditor title="Entry (BUY)" group={entry} onChange={setEntry} />
-      </div>
-      <div className="rounded-lg border border-neutral-800 p-4">
-        <ConditionGroupEditor title="Exit" group={exit} onChange={setExit} />
-      </div>
+      {strategyType === "rule" ? (
+        <>
+          <div className="rounded-lg border border-neutral-800 p-4">
+            <ConditionGroupEditor title="Entry (BUY)" group={entry} onChange={setEntry} />
+          </div>
+          <div className="rounded-lg border border-neutral-800 p-4">
+            <ConditionGroupEditor title="Exit" group={exit} onChange={setExit} />
+          </div>
+        </>
+      ) : (
+        <div className="rounded-lg border border-neutral-800 p-4">
+          <h3 className="text-sm font-medium">Elliott Wave</h3>
+          <p className="mt-1 text-xs text-neutral-400">
+            Waits for a completed wave 1-2 — a swing low, a swing high, then a higher low that
+            retraces part of wave 1 — and buys the break above the wave-1 top to ride wave 3.
+            Exits at the Fibonacci projection, on a confirmed swing high, or if price breaks
+            back below the wave-2 low.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-4">
+            {(
+              [
+                ["zigzagPct", "Swing threshold %", 0.1],
+                ["minRetracement", "Min wave-2 retracement", 0.01],
+                ["maxRetracement", "Max wave-2 retracement", 0.01],
+                ["targetExtension", "Wave-3 target (× wave 1)", 0.1],
+              ] as const
+            ).map(([key, label, step]) => (
+              <label key={key} className="flex flex-col gap-1 text-sm text-neutral-400">
+                {label}
+                <input
+                  type="number"
+                  step={step}
+                  min={0}
+                  className="w-40 rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-neutral-100"
+                  value={elliott[key]}
+                  onChange={(e) =>
+                    setElliott((prev) => ({ ...prev, [key]: Number(e.target.value) }))
+                  }
+                />
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-3">
         <button

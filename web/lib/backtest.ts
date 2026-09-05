@@ -2,7 +2,12 @@
 // engine one at a time, filling at the *next* candle's open (avoids look-ahead bias), then
 // reuses analytics.ts's P&L math (same shape as trades from Supabase) for metrics.
 import { equityCurve, summarizeBySymbol } from "./analytics";
-import { evaluateStrategy, type Candle, type StrategyDefinition } from "./rule-engine";
+import {
+  evaluateStrategy,
+  type Candle,
+  type SignalType,
+  type StrategyDefinition,
+} from "./rule-engine";
 import type { Trade } from "./supabase";
 
 export type RiskConfig = {
@@ -20,8 +25,20 @@ export type BacktestResult = {
   trades: Trade[];
 };
 
+/** Decides what to do given all candles up to and including the current one. */
+export type Evaluator = (history: Candle[]) => SignalType;
+
 export function runBacktest(
   definition: StrategyDefinition,
+  symbol: string,
+  candles: Candle[],
+  risk: RiskConfig
+): BacktestResult {
+  return runBacktestWith((history) => evaluateStrategy(definition, history), symbol, candles, risk);
+}
+
+export function runBacktestWith(
+  evaluate: Evaluator,
   symbol: string,
   candles: Candle[],
   risk: RiskConfig
@@ -46,7 +63,7 @@ export function runBacktest(
 
   for (let i = 0; i < candles.length - 1; i++) {
     const history = candles.slice(0, i + 1);
-    const signal = evaluateStrategy(definition, history);
+    const signal = evaluate(history);
     if (!signal) continue;
 
     const price = candles[i + 1].open;

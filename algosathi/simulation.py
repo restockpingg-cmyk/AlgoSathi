@@ -5,7 +5,7 @@ from loguru import logger
 
 from algosathi.broker.base import BrokerAdapter
 from algosathi.broker.paper_broker import PaperBroker
-from algosathi.core.models import Signal
+from algosathi.core.models import Fill, Signal
 from algosathi.risk.risk_manager import RiskManager
 from algosathi.strategy.base import Strategy
 
@@ -16,9 +16,11 @@ def act_on_signal(
     risk_manager: RiskManager,
     broker: BrokerAdapter,
     realized_pnl_today: float,
-) -> None:
+) -> Fill | None:
+    """Returns the Fill if the signal made it past the risk manager, else None — callers that
+    log signals use this to record whether a signal was acted on or merely observed."""
     if signal is None:
-        return
+        return None
 
     position = broker.get_position(strategy_symbol)
     open_position_count = len(broker.get_positions())
@@ -30,13 +32,14 @@ def act_on_signal(
         open_position_count=open_position_count,
     )
     if order is None:
-        return
+        return None
 
     fill = broker.place_order(order)
     logger.info(
         f"{fill.symbol}: {fill.side.value.upper()} {fill.quantity} @ {fill.price:.2f} "
         f"(signal: {signal.reason})"
     )
+    return fill
 
 
 def simulate_candles(
