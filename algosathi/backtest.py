@@ -11,6 +11,7 @@ from algosathi.config import RiskConfig
 from algosathi.core.models import Fill
 from algosathi.risk.risk_manager import RiskManager
 from algosathi.simulation import simulate_candles
+from algosathi.strategy.base import Strategy
 from algosathi.strategy.rule_strategy import RuleStrategy
 
 
@@ -61,19 +62,17 @@ def _win_rate(trades: list[Fill]) -> float:
     return wins / sells if sells else 0.0
 
 
-def run_backtest(
-    definition: dict[str, Any],
+def run_strategy_backtest(
+    strategy: Strategy,
     symbol: str,
     candles: pd.DataFrame,
     risk_config: RiskConfig,
     starting_cash: float = 100_000.0,
 ) -> BacktestResult:
-    """Runs a RuleStrategy definition through the exact same simulation loop the live bot
-    uses (simulation.py), then computes performance metrics. Note: an open position at the
-    end of the candle window is not marked-to-market — realized_pnl only reflects closed
-    trades."""
+    """Runs any Strategy through the exact same simulation loop the live bot uses
+    (simulation.py), then computes performance metrics. Note: an open position at the end of
+    the candle window is not marked-to-market — realized_pnl only reflects closed trades."""
     trades: list[Fill] = []
-    strategy = RuleStrategy(symbol=symbol, definition=definition)
     risk_manager = RiskManager(
         order_quantity=risk_config.order_quantity,
         max_daily_loss=risk_config.max_daily_loss,
@@ -93,4 +92,21 @@ def run_backtest(
         max_drawdown=_max_drawdown(curve),
         equity_curve=curve.to_dict("records") if not curve.empty else [],
         trades=trades,
+    )
+
+
+def run_backtest(
+    definition: dict[str, Any],
+    symbol: str,
+    candles: pd.DataFrame,
+    risk_config: RiskConfig,
+    starting_cash: float = 100_000.0,
+) -> BacktestResult:
+    """Backtests a rule-tree definition — the format the web builder produces."""
+    return run_strategy_backtest(
+        RuleStrategy(symbol=symbol, definition=definition),
+        symbol,
+        candles,
+        risk_config,
+        starting_cash,
     )
