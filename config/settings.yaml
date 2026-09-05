@@ -6,6 +6,9 @@ symbol: INFY
 exchange: NSE_EQ
 
 strategy:
+  # supabase = run whichever strategy is marked active for this symbol in the dashboard,
+  # yaml = ignore the dashboard and use the name/params below.
+  source: supabase
   name: sma_crossover
   fast_period: 9
   slow_period: 21
