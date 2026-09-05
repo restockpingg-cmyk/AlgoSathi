@@ -38,13 +38,15 @@ class UpstoxHistoricalProvider(MarketDataProvider):
         response.raise_for_status()
         return response.json()
 
-    def get_recent_candles(self, symbol: str, exchange: str, interval_minutes: int) -> pd.DataFrame:
+    def get_recent_candles(
+        self, symbol: str, exchange: str, interval_minutes: int, to_date: date | None = None
+    ) -> pd.DataFrame:
         exchange_code, _, segment = exchange.partition("_")
         instrument_key = resolve_instrument_key(
             self.access_token, symbol, exchange_code or exchange, segment or "EQ"
         )
 
-        to_date = date.today()
+        to_date = to_date or date.today()
         from_date = to_date - timedelta(days=self.lookback_days)
         payload = self._fetch(instrument_key, interval_minutes, to_date, from_date)
 

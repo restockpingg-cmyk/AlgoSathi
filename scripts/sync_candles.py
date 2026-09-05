@@ -14,6 +14,7 @@ for 16-300 minute or 1-5 hour candles, no limit for daily/weekly/monthly. Run th
 from __future__ import annotations
 
 import argparse
+from datetime import date
 
 from algosathi.auth.upstox_auth import get_valid_token
 from algosathi.config import get_settings
@@ -32,6 +33,14 @@ def main() -> None:
         default=28,
         help="stay under Upstox's per-request cap (~1 month for 1-15min candles)",
     )
+    parser.add_argument(
+        "--to-date",
+        type=str,
+        default=None,
+        help="ISO date (YYYY-MM-DD) to end the window at; defaults to today. Use this to "
+        "walk further back than one request's cap allows, e.g. --to-date <oldest synced date> "
+        "to fetch the preceding window.",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -39,10 +48,11 @@ def main() -> None:
     if client is None:
         raise SystemExit("SUPABASE_URL / SUPABASE_SERVICE_KEY are not set in .env")
 
+    to_date = date.fromisoformat(args.to_date) if args.to_date else None
     token = get_valid_token(settings)
     provider = UpstoxHistoricalProvider(access_token=token, lookback_days=args.lookback_days)
     candles = provider.get_recent_candles(
-        symbol=args.symbol, exchange=args.exchange, interval_minutes=args.interval
+        symbol=args.symbol, exchange=args.exchange, interval_minutes=args.interval, to_date=to_date
     )
 
     rows = [
