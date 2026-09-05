@@ -10,12 +10,14 @@ from loguru import logger
 from algosathi.broker.base import BrokerAdapter
 from algosathi.broker.paper_broker import PaperBroker
 from algosathi.config import Settings, get_settings
-from algosathi.core.enums import Mode, SignalType
+from algosathi.core.enums import Mode, Side, SignalType
+from algosathi.core.models import Signal
 from algosathi.logging_setup import setup_logging
 from algosathi.persistence.db import get_session_factory, record_fill
 from algosathi.persistence.supabase_status import is_trading_enabled, push_signal, push_status
 from algosathi.persistence.supabase_strategies import fetch_active_strategy
 from algosathi.persistence.supabase_sync import push_fill
+from algosathi.risk.position_guard import PositionGuard
 from algosathi.risk.risk_manager import RiskManager
 from algosathi.simulation import act_on_signal, simulate_candles
 from algosathi.strategy.base import Strategy
@@ -87,6 +89,8 @@ def build_risk_manager(settings: Settings) -> RiskManager:
         order_quantity=cfg.order_quantity,
         max_daily_loss=cfg.max_daily_loss,
         max_open_positions=cfg.max_open_positions,
+        capital_per_trade=cfg.capital_per_trade,
+        lot_size=cfg.lot_size,
     )
 
 
@@ -122,7 +126,9 @@ def run_replay(settings: Settings, candles: pd.DataFrame) -> PaperBroker:
     symbol = settings.yaml.symbol
     logger.info(f"Starting replay for {symbol} over {len(candles)} candles")
 
-    simulate_candles(strategy, risk_manager, broker, symbol, candles)
+    simulate_candles(
+        strategy, risk_manager, broker, symbol, candles, guard=PositionGuard(settings.yaml.risk.exits)
+    )
 
     logger.info(
         f"Replay complete. realized_pnl={broker.realized_pnl:.2f} "
@@ -147,6 +153,7 @@ def run_live(settings: Settings) -> None:
     token = get_valid_token(settings)
     provider = UpstoxHistoricalProvider(access_token=token)
 
+    guard = PositionGuard(settings.yaml.risk.exits)
     strategy_name = describe_strategy(strategy)
     logger.info(f"Starting live loop for {symbol} in {settings.mode.value} mode ({strategy_name})")
 
@@ -189,7 +196,31 @@ def run_live(settings: Settings) -> None:
                 (latest_close - position.avg_price) * position.quantity if position.quantity else 0.0
             )
 
-            signal = strategy.on_candles(candles)
+            # Stops are checked before the strategy is even consulted, so a stop loss or the
+            # square-off always wins over a strategy signal on the same candle.
+            signal = None
+            if guard.is_armed:
+                last = candles.iloc[-1]
+                triggered = guard.check(
+                    latest_close, now, low=float(last["low"]), high=float(last["high"])
+                )
+                if triggered is not None:
+                    signal = Signal(
+                        symbol=symbol,
+                        signal_type=SignalType.EXIT,
+                        reason=triggered.reason,
+                        timestamp=candles.iloc[-1]["timestamp"],
+                    )
+                    logger.warning(f"{symbol}: {triggered.reason}")
+
+            if signal is None:
+                signal = strategy.on_candles(candles)
+                if signal is not None and signal.signal_type is SignalType.BUY:
+                    allowed, why = guard.entry_allowed(now)
+                    if not allowed:
+                        logger.info(f"{symbol}: BUY skipped — {why}")
+                        signal = None
+
             fill = None
             if signal is not None:
                 # The dashboard kill switch only blocks *opening* risk. An exit must always be
@@ -199,8 +230,18 @@ def run_live(settings: Settings) -> None:
                     logger.warning(f"{symbol}: BUY suppressed — trading is disabled from the dashboard")
                 else:
                     fill = act_on_signal(
-                        signal, symbol, risk_manager, broker, getattr(broker, "realized_pnl", 0.0)
+                        signal,
+                        symbol,
+                        risk_manager,
+                        broker,
+                        getattr(broker, "realized_pnl", 0.0),
+                        latest_close,
                     )
+                    if fill is not None:
+                        if fill.side == Side.BUY:
+                            guard.on_entry(fill.price)
+                        else:
+                            guard.on_exit()
                 push_signal(settings, signal, latest_close, acted=fill is not None)
 
             heartbeat(

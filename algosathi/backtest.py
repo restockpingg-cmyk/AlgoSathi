@@ -9,6 +9,7 @@ from algosathi.analytics import equity_curve, summarize_by_symbol
 from algosathi.broker.paper_broker import PaperBroker
 from algosathi.config import RiskConfig
 from algosathi.core.models import Fill
+from algosathi.risk.position_guard import PositionGuard
 from algosathi.risk.risk_manager import RiskManager
 from algosathi.simulation import simulate_candles
 from algosathi.strategy.base import Strategy
@@ -77,10 +78,13 @@ def run_strategy_backtest(
         order_quantity=risk_config.order_quantity,
         max_daily_loss=risk_config.max_daily_loss,
         max_open_positions=risk_config.max_open_positions,
+        capital_per_trade=risk_config.capital_per_trade,
+        lot_size=risk_config.lot_size,
     )
     broker = PaperBroker(starting_cash=starting_cash, trade_recorder=trades.append)
+    guard = PositionGuard(risk_config.exits)
 
-    simulate_candles(strategy, risk_manager, broker, symbol, candles)
+    simulate_candles(strategy, risk_manager, broker, symbol, candles, guard=guard)
 
     curve = equity_curve(trades)
     summary = summarize_by_symbol(trades)

@@ -18,6 +18,27 @@ risk:
   order_quantity: 1
   max_daily_loss: 5000
   max_open_positions: 1
+  # Set capital_per_trade to size by money instead of a fixed quantity; lot_size rounds down
+  # to whole lots (1 for equity, the contract size for F&O).
+  capital_per_trade: null
+  lot_size: 1
+
+  # Position-level exits, checked before the strategy on every candle. Percentages are of the
+  # entry price; times are exchange-local (IST). null switches a rule off.
+  exits:
+    stop_loss_pct: null
+    target_pct: null
+    # Caps the give-back from the best price since entry. On the INFY window this cut max
+    # drawdown from 40.20 to 12.00 — the drawdown reduction is the point; treat the P&L
+    # difference as noise.
+    trailing_stop_pct: 1.0
+    # Deliberately off. This strategy holds positions across days (RSI can take days to
+    # reach 65), so forcing a daily square-off cut INFY from +110 to +23 and NIFTY to -390.
+    # Turn it on for a genuinely intraday strategy, where being flat by 15:15 avoids the
+    # broker force-closing MIS positions at whatever price it likes.
+    square_off_time: null
+    no_entry_before: null
+    no_entry_after: null
 
 paper:
   starting_cash: 100000

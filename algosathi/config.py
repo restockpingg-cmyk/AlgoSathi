@@ -22,10 +22,30 @@ class StrategyConfig(BaseModel):
     source: str = "yaml"
 
 
+class ExitRulesConfig(BaseModel):
+    """Position-level exits, all independent of whatever the strategy thinks.
+
+    Percentages are of the entry price. Times are 'HH:MM' in the exchange's local time; set
+    any of them to null to switch that rule off.
+    """
+
+    stop_loss_pct: float | None = None
+    target_pct: float | None = None
+    trailing_stop_pct: float | None = None
+    square_off_time: str | None = None  # e.g. "15:15" — be flat before the broker forces it
+    no_entry_before: str | None = None  # e.g. "09:20" — skip the opening auction's noise
+    no_entry_after: str | None = None  # e.g. "15:00" — no entries that square-off would close
+
+
 class RiskConfig(BaseModel):
     order_quantity: int = 1
     max_daily_loss: float = 5000.0
     max_open_positions: int = 1
+    # When set, quantity is derived from this much capital at the entry price instead of
+    # using order_quantity, rounded down to a whole multiple of lot_size.
+    capital_per_trade: float | None = None
+    lot_size: int = 1
+    exits: ExitRulesConfig = ExitRulesConfig()
 
 
 class PaperConfig(BaseModel):
