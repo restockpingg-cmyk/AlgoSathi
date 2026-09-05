@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/admin-auth";
 import { getServiceClient } from "@/lib/supabase-server";
 
 export async function PATCH(
   request: NextRequest,
   ctx: RouteContext<"/api/strategies/[id]">
 ) {
+  const denied = requireAdmin(request);
+  if (denied) return denied;
+
   const { id } = await ctx.params;
   const body = await request.json();
   const supabase = getServiceClient();
@@ -16,8 +20,9 @@ export async function PATCH(
       .from("strategies")
       .select("symbol")
       .eq("id", id)
-      .single();
+      .maybeSingle();
     if (fetchError) return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    if (!current) return NextResponse.json({ error: "Strategy not found" }, { status: 404 });
 
     const { error: deactivateError } = await supabase
       .from("strategies")
@@ -34,8 +39,9 @@ export async function PATCH(
     .update({ ...body, updated_at: new Date().toISOString() })
     .eq("id", id)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (!data) return NextResponse.json({ error: "Strategy not found" }, { status: 404 });
   return NextResponse.json(data);
 }
