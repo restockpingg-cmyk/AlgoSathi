@@ -13,6 +13,26 @@ export async function PATCH(
   const body = await request.json();
   const supabase = getServiceClient();
 
+  // A running bot loaded its strategy once at startup. Changing which strategy is active
+  // while trading is armed would leave the dashboard describing one strategy and the bot
+  // trading another, and a restart would silently adopt the swap. Stop trading first.
+  const { data: controls } = await supabase
+    .from("bot_controls")
+    .select("trading_enabled")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (controls?.trading_enabled) {
+    return NextResponse.json(
+      {
+        error:
+          "Trading is running and the strategy is locked. Stop trading on the Live page " +
+          "before changing strategies.",
+      },
+      { status: 409 }
+    );
+  }
+
   if (body?.is_active === true) {
     // Look up the symbol so activating this strategy deactivates any other active
     // strategy for the same symbol (the bot runs at most one active strategy per symbol).
