@@ -14,6 +14,7 @@ from algosathi.core.enums import Mode, OrderType, Side, SignalType
 from algosathi.core.models import Fill, OrderRequest, Signal
 from algosathi.logging_setup import setup_logging
 from algosathi.persistence.db import get_session_factory, record_fill
+from algosathi.risk.day_ledger import open_positions, realized_pnl_today
 from algosathi.persistence.supabase_status import is_trading_enabled, push_signal, push_status
 from algosathi.persistence.supabase_strategies import fetch_active_strategy
 from algosathi.persistence.supabase_sync import push_fill
@@ -203,6 +204,20 @@ def run_live(settings: Settings) -> None:
 
     guard = PositionGuard(settings.yaml.risk.exits)
     resting_stop_id: str | None = None
+    session_factory = get_session_factory()
+
+    # Restore state after a restart. A bot that comes back mid-session believing it is flat
+    # would re-enter a symbol it already holds and leave the position it does hold unguarded.
+    held = open_positions(session_factory, settings.mode)
+    if symbol in held:
+        existing = broker.get_position(symbol)
+        if existing.quantity > 0:
+            guard.on_entry(existing.avg_price)
+            logger.warning(
+                f"{symbol}: resuming with an open position of {existing.quantity} @ "
+                f"{existing.avg_price:.2f} — stops re-armed, but any stop order resting at the "
+                f"broker from the previous run is not tracked and should be checked by hand"
+            )
     strategy_name = describe_strategy(strategy)
     logger.info(f"Starting live loop for {symbol} in {settings.mode.value} mode ({strategy_name})")
 
@@ -292,7 +307,7 @@ def run_live(settings: Settings) -> None:
                         symbol,
                         risk_manager,
                         broker,
-                        getattr(broker, "realized_pnl", 0.0),
+                        realized_pnl_today(session_factory, settings.mode),
                         latest_close,
                     )
                     if fill is not None:
