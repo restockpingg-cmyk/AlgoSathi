@@ -81,3 +81,35 @@ def test_exit_allowed_even_when_daily_loss_limit_hit():
 
     assert order is not None
     assert order.side == Side.SELL
+
+
+def test_max_open_positions_is_shared_across_symbols():
+    """A universe scan must not give each symbol its own budget — that would take on N times
+    the risk the config asked for."""
+    from algosathi.core.enums import SignalType
+    from algosathi.core.models import Position, Signal
+
+    manager = RiskManager(order_quantity=1, max_daily_loss=5000.0, max_open_positions=2)
+    signal = Signal(
+        symbol="TCS", signal_type=SignalType.BUY, reason="entry", timestamp=datetime(2026, 1, 1)
+    )
+    flat_in_tcs = Position(symbol="TCS", quantity=0, avg_price=0.0)
+
+    # Two other symbols are already held, so this third entry must be refused even though
+    # TCS itself is flat.
+    assert manager.evaluate(signal, flat_in_tcs, 0.0, open_position_count=2) is None
+    assert manager.evaluate(signal, flat_in_tcs, 0.0, open_position_count=1) is not None
+
+
+def test_daily_loss_limit_blocks_every_symbol_not_just_the_loser():
+    from algosathi.core.enums import SignalType
+    from algosathi.core.models import Position, Signal
+
+    manager = RiskManager(order_quantity=1, max_daily_loss=1000.0, max_open_positions=5)
+    signal = Signal(
+        symbol="WIPRO", signal_type=SignalType.BUY, reason="entry", timestamp=datetime(2026, 1, 1)
+    )
+    flat = Position(symbol="WIPRO", quantity=0, avg_price=0.0)
+
+    assert manager.evaluate(signal, flat, -1000.0, open_position_count=0) is None
+    assert manager.evaluate(signal, flat, -999.0, open_position_count=0) is not None

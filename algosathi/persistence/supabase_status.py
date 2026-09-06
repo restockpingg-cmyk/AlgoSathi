@@ -18,15 +18,19 @@ from algosathi.core.models import Signal
 from algosathi.persistence.supabase_client import get_client
 
 
-def push_status(settings: Settings, **fields: Any) -> None:
-    """Upserts the single bot_status row. Extra keys are passed straight through, so the
+def push_status(settings: Settings, symbol: str, **fields: Any) -> None:
+    """Upserts one symbol's bot_status row. Extra keys are passed straight through, so the
     caller decides what is worth reporting on any given loop."""
     client = get_client(settings)
     if client is None:
         return
-    row = {"id": 1, "updated_at": datetime.now().astimezone().isoformat(), **fields}
+    row = {
+        "symbol": symbol,
+        "updated_at": datetime.now().astimezone().isoformat(),
+        **fields,
+    }
     try:
-        client.table("bot_status").upsert(row, on_conflict="id").execute()
+        client.table("bot_status").upsert(row, on_conflict="symbol").execute()
     except Exception as exc:  # noqa: BLE001 — telemetry must never take the bot down
         logger.warning(f"Could not push bot status: {exc}")
 

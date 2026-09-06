@@ -3,6 +3,16 @@
 mode: paper # paper | live
 
 symbol: INFY
+
+# Scan a universe and trade every symbol whose entry conditions are met, all using the one
+# active strategy. Leave empty to trade only `symbol` above.
+#
+# Read risk.max_open_positions before widening this: it is the only thing stopping a broad
+# universe from opening a position in every name at once, and it is shared across symbols,
+# not per symbol. With order_quantity sizing, N open positions is N x the capital at risk.
+symbols: []
+# symbols: [INFY, TCS, WIPRO, HCLTECH, TECHM]
+
 exchange: NSE_EQ
 
 strategy:

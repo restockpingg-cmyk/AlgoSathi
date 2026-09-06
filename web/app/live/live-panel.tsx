@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 type Status = {
+  symbol: string;
   updated_at: string;
   mode: string | null;
-  symbol: string | null;
   strategy_name: string | null;
   market_open: boolean | null;
   last_candle_at: string | null;
@@ -38,7 +38,10 @@ type TradeRow = {
 };
 
 type LiveData = {
-  status: Status | null;
+  statuses: Status[];
+  realizedPnl: number;
+  unrealizedPnl: number;
+  cash: number | null;
   tradingEnabled: boolean;
   signals: SignalRow[];
   trades: TradeRow[];
@@ -124,10 +127,17 @@ export function LivePanel() {
   if (error && !data) return <p className="text-sm text-red-400">{error}</p>;
   if (!data) return <p className="text-sm text-neutral-500">Loading…</p>;
 
-  const { status } = data;
-  const heartbeatAge = status ? now - new Date(status.updated_at).getTime() : Infinity;
-  const running = heartbeatAge < STALE_AFTER_MS;
-  const total = (status?.realized_pnl ?? 0) + (status?.unrealized_pnl ?? 0);
+  const { statuses } = data;
+  // The freshest row decides whether the process is alive — a symbol that errored keeps its
+  // older timestamp, and judging the whole bot by the stalest one would read as "stopped".
+  const newest = statuses.reduce<Status | null>(
+    (best, s) => (!best || s.updated_at > best.updated_at ? s : best),
+    null
+  );
+  const running = newest ? now - new Date(newest.updated_at).getTime() < STALE_AFTER_MS : false;
+  const total = data.realizedPnl + data.unrealizedPnl;
+  const held = statuses.filter((s) => s.position_qty > 0);
+  const errored = statuses.filter((s) => s.last_error);
 
   return (
     <div className="space-y-6">
@@ -141,15 +151,15 @@ export function LivePanel() {
           <div>
             <div className="font-medium">
               {running ? "Bot running" : "Bot not running"}
-              {status?.mode && (
+              {newest?.mode && (
                 <span className="ml-2 rounded bg-neutral-800 px-2 py-0.5 text-xs text-neutral-400">
-                  {status.mode}
+                  {newest.mode}
                 </span>
               )}
             </div>
             <div className="text-xs text-neutral-500">
-              {status
-                ? `${status.strategy_name ?? "—"} on ${status.symbol ?? "—"} · heartbeat ${ago(status.updated_at, now)}`
+              {newest
+                ? `${newest.strategy_name ?? "—"} · ${statuses.length} symbol${statuses.length === 1 ? "" : "s"} watched, ${held.length} held · heartbeat ${ago(newest.updated_at, now)}`
                 : "No heartbeat yet — start the bot with: python -m algosathi.runner"}
             </div>
           </div>
@@ -176,31 +186,81 @@ export function LivePanel() {
         </p>
       )}
 
-      {status?.last_error && (
-        <p className="rounded-lg border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-200">
-          Last loop failed: {status.last_error}
+      {errored.map((s) => (
+        <p
+          key={s.symbol}
+          className="rounded-lg border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-200"
+        >
+          <strong>{s.symbol}</strong> — last poll failed: {s.last_error}
         </p>
-      )}
+      ))}
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-        <Stat label="Last price" value={money(status?.last_price)} />
-        <Stat
-          label="Position"
-          value={status?.position_qty ? `${status.position_qty} @ ${money(status.position_avg_price)}` : "Flat"}
-        />
-        <Stat label="Cash" value={money(status?.cash)} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Cash" value={money(data.cash)} />
         <Stat
           label="Realized P&L"
-          value={money(status?.realized_pnl)}
-          tone={(status?.realized_pnl ?? 0) >= 0 ? "up" : "down"}
+          value={money(data.realizedPnl)}
+          tone={data.realizedPnl >= 0 ? "up" : "down"}
         />
         <Stat
           label="Unrealized P&L"
-          value={money(status?.unrealized_pnl)}
-          tone={(status?.unrealized_pnl ?? 0) >= 0 ? "up" : "down"}
+          value={money(data.unrealizedPnl)}
+          tone={data.unrealizedPnl >= 0 ? "up" : "down"}
         />
         <Stat label="Total P&L" value={money(total)} tone={total >= 0 ? "up" : "down"} />
       </div>
+
+      <section>
+        <h2 className="mb-2 text-sm font-medium text-neutral-300">Symbols</h2>
+        {statuses.length === 0 ? (
+          <p className="text-sm text-neutral-500">No symbols reporting yet.</p>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-neutral-800">
+            <table className="w-full text-sm">
+              <thead className="bg-neutral-900 text-neutral-400">
+                <tr>
+                  <th className="px-4 py-2 text-left font-medium">Symbol</th>
+                  <th className="px-4 py-2 text-right font-medium">Last price</th>
+                  <th className="px-4 py-2 text-right font-medium">Position</th>
+                  <th className="px-4 py-2 text-right font-medium">Unrealized</th>
+                  <th className="px-4 py-2 text-right font-medium">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {statuses.map((s) => (
+                  <tr key={s.symbol} className="border-t border-neutral-800">
+                    <td className="px-4 py-2 font-medium">{s.symbol}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{money(s.last_price)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {s.position_qty ? (
+                        <span className="text-emerald-400">
+                          {s.position_qty} @ {money(s.position_avg_price)}
+                        </span>
+                      ) : (
+                        <span className="text-neutral-500">Flat</span>
+                      )}
+                    </td>
+                    <td
+                      className={`px-4 py-2 text-right tabular-nums ${
+                        s.unrealized_pnl > 0
+                          ? "text-emerald-400"
+                          : s.unrealized_pnl < 0
+                            ? "text-red-400"
+                            : ""
+                      }`}
+                    >
+                      {s.position_qty ? money(s.unrealized_pnl) : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right text-xs text-neutral-500">
+                      {ago(s.updated_at, now)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section>

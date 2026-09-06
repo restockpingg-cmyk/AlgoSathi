@@ -55,12 +55,27 @@ class PaperConfig(BaseModel):
 class YamlConfig(BaseModel):
     mode: Mode = Mode.PAPER
     symbol: str = "INFY"
+    # Scan this whole universe and trade every symbol whose entry conditions are met, using
+    # the same strategy for each. Empty means single-symbol mode on `symbol` above.
+    # max_open_positions is what stops a broad universe from opening 40 positions at once.
+    symbols: list[str] = []
     exchange: str = "NSE_EQ"
     strategy: StrategyConfig = StrategyConfig()
     risk: RiskConfig = RiskConfig()
     paper: PaperConfig = PaperConfig()
     polling_interval_seconds: int = 60
     candle_interval_minutes: int = 5
+
+    @property
+    def universe(self) -> list[str]:
+        """Symbols to trade, de-duplicated and order-preserving.
+
+        `symbols` wins when set; otherwise it is the single `symbol`, so existing configs keep
+        working untouched.
+        """
+        raw = self.symbols or [self.symbol]
+        seen: set[str] = set()
+        return [s for s in raw if not (s in seen or seen.add(s))]
 
 
 def load_yaml_config(path: Path = DEFAULT_SETTINGS_PATH) -> YamlConfig:

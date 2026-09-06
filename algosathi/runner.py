@@ -22,6 +22,7 @@ from algosathi.risk.position_guard import PositionGuard
 from algosathi.risk.risk_manager import RiskManager
 from algosathi.simulation import act_on_signal, simulate_candles
 from algosathi.strategy.base import Strategy
+from algosathi.symbol_worker import SymbolWorker
 from algosathi.strategy.elliott_wave import ElliottWaveStrategy
 from algosathi.strategy.rule_strategy import RuleStrategy
 from algosathi.strategy.sma_crossover import SmaCrossoverStrategy
@@ -54,9 +55,9 @@ def build_strategy_from_row(symbol: str, row: dict) -> Strategy:
     raise ValueError(f"unknown strategy_type: {strategy_type!r}")
 
 
-def build_strategy(settings: Settings) -> Strategy:
+def build_strategy(settings: Settings, symbol: str | None = None) -> Strategy:
     cfg = settings.yaml.strategy
-    symbol = settings.yaml.symbol
+    symbol = symbol or settings.yaml.symbol
 
     if cfg.source == "supabase":
         row = fetch_active_strategy(symbol, settings)
@@ -82,50 +83,6 @@ def build_strategy(settings: Settings) -> Strategy:
 def describe_strategy(strategy: Strategy) -> str:
     """Human-readable label for the dashboard heartbeat."""
     return type(strategy).__name__
-
-
-def place_resting_stop(
-    broker: BrokerAdapter, guard: PositionGuard, symbol: str, fill: Fill
-) -> str | None:
-    """Parks a stop-loss order at the exchange right after entering.
-
-    This is the difference between a stop that triggers on tick and one that waits for the
-    bot's next poll — with 5-minute candles and a 60-second interval the polled stop can be
-    six minutes late, which in a fast move is most of the damage. The polled PositionGuard
-    stays active regardless, as the backstop for the trailing stop and as cover for brokers
-    that cannot rest orders.
-    """
-    stop_price = guard.resting_stop_price(fill.price)
-    if stop_price is None:
-        return None
-
-    try:
-        order_id = broker.place_resting_order(
-            OrderRequest(
-                symbol=symbol,
-                side=Side.SELL,
-                quantity=fill.quantity,
-                order_type=OrderType.SL_M,
-                trigger_price=stop_price,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"{symbol}: could not park a stop at {stop_price} — {exc}")
-        return None
-
-    if order_id:
-        logger.info(f"{symbol}: stop-loss order resting at {stop_price}")
-    return order_id
-
-
-def cancel_resting_stop(broker: BrokerAdapter, order_id: str | None) -> None:
-    if not order_id:
-        return None
-    try:
-        broker.cancel_order(order_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"could not cancel resting stop {order_id} — cancel it manually: {exc}")
-    return None
 
 
 def build_risk_manager(settings: Settings) -> RiskManager:
@@ -187,55 +144,79 @@ def run_replay(settings: Settings, candles: pd.DataFrame) -> PaperBroker:
 
 
 def run_live(settings: Settings) -> None:
-    """Poll for the latest candle on a fixed interval during market hours, feeding it through
-    the same strategy/risk/broker pipeline as run_replay."""
+    """Poll every symbol in the universe on a fixed interval during market hours, feeding each
+    through the same strategy/risk/broker pipeline as run_replay.
+
+    Account-level limits are deliberately shared across symbols rather than per-symbol: a
+    universe scan that gave every symbol its own max_open_positions and its own daily-loss
+    budget would take on N times the risk the config asked for.
+    """
     from algosathi.market_data.upstox_historical import UpstoxHistoricalProvider
-
-    setup_logging()
-    strategy = build_strategy(settings)
-    risk_manager = build_risk_manager(settings)
-    broker = build_broker(settings)
-    symbol = settings.yaml.symbol
-
     from algosathi.auth.upstox_auth import get_valid_token
 
-    token = get_valid_token(settings)
-    provider = UpstoxHistoricalProvider(access_token=token)
-
-    guard = PositionGuard(settings.yaml.risk.exits)
-    resting_stop_id: str | None = None
+    setup_logging()
+    risk_manager = build_risk_manager(settings)
+    broker = build_broker(settings)
     session_factory = get_session_factory()
+    provider = UpstoxHistoricalProvider(access_token=get_valid_token(settings))
 
-    # Restore state after a restart. A bot that comes back mid-session believing it is flat
-    # would re-enter a symbol it already holds and leave the position it does hold unguarded.
-    held = open_positions(session_factory, settings.mode)
-    if symbol in held:
-        existing = broker.get_position(symbol)
-        if existing.quantity > 0:
-            guard.on_entry(existing.avg_price)
-            logger.warning(
-                f"{symbol}: resuming with an open position of {existing.quantity} @ "
-                f"{existing.avg_price:.2f} — stops re-armed, but any stop order resting at the "
-                f"broker from the previous run is not tracked and should be checked by hand"
+    universe = settings.yaml.universe
+    strategy_row = None
+    if settings.yaml.strategy.source == "supabase":
+        # Fetched once and applied across the universe: the point of a scan is one strategy
+        # over many symbols, not a different strategy per symbol.
+        strategy_row = fetch_active_strategy(settings.yaml.symbol, settings)
+        if strategy_row is None:
+            raise RuntimeError(
+                f"strategy.source is 'supabase' but no active strategy found for "
+                f"{settings.yaml.symbol!r} in the strategies table"
             )
-    strategy_name = describe_strategy(strategy)
-    logger.info(f"Starting live loop for {symbol} in {settings.mode.value} mode ({strategy_name})")
 
-    def heartbeat(**extra) -> None:
-        """Report where the bot is on every loop, so the dashboard can tell 'flat on purpose'
-        apart from 'the process died'."""
-        position = broker.get_position(symbol)
-        push_status(
-            settings,
-            mode=settings.mode.value,
-            symbol=symbol,
-            strategy_name=strategy_name,
-            position_qty=position.quantity,
-            position_avg_price=position.avg_price if position.quantity else None,
-            cash=broker.get_funds(),
-            realized_pnl=getattr(broker, "realized_pnl", 0.0),
-            **extra,
+    workers: list[SymbolWorker] = []
+    for symbol in universe:
+        strategy = (
+            build_strategy_from_row(symbol, strategy_row)
+            if strategy_row is not None
+            else build_strategy(settings, symbol)
         )
+        worker = SymbolWorker(
+            symbol=symbol,
+            strategy=strategy,
+            guard=PositionGuard(settings.yaml.risk.exits),
+            broker=broker,
+            risk_manager=risk_manager,
+        )
+        worker.restore()
+        workers.append(worker)
+
+    strategy_name = describe_strategy(workers[0].strategy) if workers else "none"
+    logger.info(
+        f"Starting live loop in {settings.mode.value} mode ({strategy_name}) over "
+        f"{len(workers)} symbol(s): {', '.join(universe)}"
+    )
+
+    def heartbeat(market_open: bool, error: str | None = None) -> None:
+        """One status row per symbol, so the dashboard can tell which symbol is holding what
+        rather than showing a single blurred total."""
+        for worker in workers:
+            position = broker.get_position(worker.symbol)
+            push_status(
+                settings,
+                symbol=worker.symbol,
+                mode=settings.mode.value,
+                strategy_name=strategy_name,
+                market_open=market_open,
+                last_candle_at=(
+                    worker.last_candle_at.isoformat() if worker.last_candle_at is not None else None
+                ),
+                last_price=worker.last_price,
+                position_qty=position.quantity,
+                position_avg_price=position.avg_price if position.quantity else None,
+                cash=broker.get_funds(),
+                realized_pnl=realized_pnl_today(session_factory, settings.mode),
+                unrealized_pnl=worker.unrealized_pnl(),
+                last_error=error or worker.last_error,
+            )
 
     while True:
         now = datetime.now()
@@ -245,94 +226,30 @@ def run_live(settings: Settings) -> None:
             time.sleep(settings.yaml.polling_interval_seconds)
             continue
 
-        try:
-            candles = provider.get_recent_candles(
-                symbol=symbol,
-                exchange=settings.yaml.exchange,
-                interval_minutes=settings.yaml.candle_interval_minutes,
-            )
-            latest_close = float(candles.iloc[-1]["close"])
-            if isinstance(broker, PaperBroker):
-                broker.update_market_price(symbol, latest_close)
+        # Read once per cycle, not once per symbol: the kill switch and the day's P&L are
+        # account-wide, and re-reading them mid-cycle would let symbols disagree about
+        # whether trading is still allowed.
+        entries_allowed = is_trading_enabled(settings)
+        pnl_today = realized_pnl_today(session_factory, settings.mode)
 
-            position = broker.get_position(symbol)
-
-            # A stop resting at the exchange fires without telling us. If the guard thinks we
-            # are in a position but the broker says we are flat, that is what happened —
-            # re-sync rather than carrying a phantom position that would block the next entry.
-            if guard.is_armed and position.is_flat:
-                logger.warning(f"{symbol}: position closed at the broker — resting stop fired")
-                guard.on_exit()
-                resting_stop_id = None
-
-            unrealized = (
-                (latest_close - position.avg_price) * position.quantity if position.quantity else 0.0
-            )
-
-            # Stops are checked before the strategy is even consulted, so a stop loss or the
-            # square-off always wins over a strategy signal on the same candle.
-            signal = None
-            if guard.is_armed:
-                last = candles.iloc[-1]
-                triggered = guard.check(
-                    latest_close, now, low=float(last["low"]), high=float(last["high"])
+        for worker in workers:
+            try:
+                candles = provider.get_recent_candles(
+                    symbol=worker.symbol,
+                    exchange=settings.yaml.exchange,
+                    interval_minutes=settings.yaml.candle_interval_minutes,
                 )
-                if triggered is not None:
-                    signal = Signal(
-                        symbol=symbol,
-                        signal_type=SignalType.EXIT,
-                        reason=triggered.reason,
-                        timestamp=candles.iloc[-1]["timestamp"],
-                    )
-                    logger.warning(f"{symbol}: {triggered.reason}")
+                if candles.empty:
+                    continue
+                signal = worker.poll(candles, now, pnl_today, entries_allowed)
+                if signal is not None:
+                    push_signal(settings, signal, worker.last_price, acted=worker.acted)
+                worker.last_error = None
+            except Exception as exc:  # noqa: BLE001 — one bad symbol must not stop the rest
+                logger.exception(f"{worker.symbol}: poll failed")
+                worker.last_error = f"{type(exc).__name__}: {exc}"
 
-            if signal is None:
-                signal = strategy.on_candles(candles)
-                if signal is not None and signal.signal_type is SignalType.BUY:
-                    allowed, why = guard.entry_allowed(now)
-                    if not allowed:
-                        logger.info(f"{symbol}: BUY skipped — {why}")
-                        signal = None
-
-            fill = None
-            if signal is not None:
-                # The dashboard kill switch only blocks *opening* risk. An exit must always be
-                # allowed through, otherwise flipping the switch would trap an open position.
-                blocked = signal.signal_type is SignalType.BUY and not is_trading_enabled(settings)
-                if blocked:
-                    logger.warning(f"{symbol}: BUY suppressed — trading is disabled from the dashboard")
-                else:
-                    fill = act_on_signal(
-                        signal,
-                        symbol,
-                        risk_manager,
-                        broker,
-                        realized_pnl_today(session_factory, settings.mode),
-                        latest_close,
-                    )
-                    if fill is not None:
-                        if fill.side == Side.BUY:
-                            guard.on_entry(fill.price)
-                            resting_stop_id = place_resting_stop(broker, guard, symbol, fill)
-                        else:
-                            guard.on_exit()
-                            # The strategy got out before the stop did, so the stop must be
-                            # pulled — a live stop order left behind would sell a position
-                            # that no longer exists and open a short.
-                            resting_stop_id = cancel_resting_stop(broker, resting_stop_id)
-                push_signal(settings, signal, latest_close, acted=fill is not None)
-
-            heartbeat(
-                market_open=True,
-                last_candle_at=candles.iloc[-1]["timestamp"].isoformat(),
-                last_price=latest_close,
-                unrealized_pnl=unrealized,
-                last_error=None,
-            )
-        except Exception as exc:  # noqa: BLE001 — one bad poll must not end the session
-            logger.exception("Live loop iteration failed")
-            heartbeat(market_open=True, last_error=f"{type(exc).__name__}: {exc}")
-
+        heartbeat(market_open=True)
         time.sleep(settings.yaml.polling_interval_seconds)
 
 
