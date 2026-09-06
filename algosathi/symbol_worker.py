@@ -14,6 +14,7 @@ run each `poll` inside its own try/except.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Callable
 
 import pandas as pd
 from loguru import logger
@@ -36,12 +37,16 @@ class SymbolWorker:
         guard: PositionGuard,
         broker: BrokerAdapter,
         risk_manager: RiskManager,
+        quote: Callable[[], float | None] | None = None,
     ):
         self.symbol = symbol
         self.strategy = strategy
         self.guard = guard
         self.broker = broker
         self.risk_manager = risk_manager
+        # Returns the last traded price right now. Used only when an order is actually going
+        # out, so a wide universe does not spend a quote call per symbol per poll.
+        self.quote = quote
 
         self.resting_stop_id: str | None = None
         self.last_price: float | None = None
@@ -136,8 +141,29 @@ class SymbolWorker:
             logger.warning(f"{self.symbol}: BUY suppressed — trading is disabled from the dashboard")
             return signal
 
+        # Fill at the price available *now*, not at the close of the candle that produced the
+        # signal. That close is already a full candle plus a poll interval old, and filling
+        # against it hands the paper account a price that is no longer on offer — which is
+        # exactly the drift that made paper results diverge from the backtest. The backtest's
+        # next-candle-open is the same idea expressed in bar terms: the first price obtainable
+        # after the signal bar.
+        fill_price = last_close
+        if self.quote is not None:
+            try:
+                live_price = self.quote()
+                if live_price:
+                    fill_price = live_price
+            except Exception as exc:  # noqa: BLE001 — a stale price beats skipping the trade
+                logger.warning(
+                    f"{self.symbol}: could not read the live price, filling at the last close "
+                    f"{last_close:.2f} instead — {exc}"
+                )
+
+        if isinstance(self.broker, PaperBroker):
+            self.broker.update_market_price(self.symbol, fill_price)
+
         fill = act_on_signal(
-            signal, self.symbol, self.risk_manager, self.broker, realized_pnl_today, last_close
+            signal, self.symbol, self.risk_manager, self.broker, realized_pnl_today, fill_price
         )
         self.acted = fill is not None
         if fill is not None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from functools import partial
 from datetime import datetime, time as dtime
 
 import pandas as pd
@@ -185,6 +186,7 @@ def run_live(settings: Settings) -> None:
             guard=PositionGuard(settings.yaml.risk.exits),
             broker=broker,
             risk_manager=risk_manager,
+            quote=partial(provider.get_ltp, symbol, settings.yaml.exchange),
         )
         worker.restore()
         workers.append(worker)
