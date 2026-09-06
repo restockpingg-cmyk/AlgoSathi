@@ -19,3 +19,9 @@ class SignalType(str, Enum):
 class OrderType(str, Enum):
     MARKET = "market"
     LIMIT = "limit"
+    # Stop orders rest at the exchange and trigger on tick rather than being polled for.
+    # SL carries a limit price as well as the trigger; SL_M fills at market once triggered,
+    # which is what you want for a protective stop — a limit can go unfilled in exactly the
+    # fast move you needed it for.
+    SL = "sl"
+    SL_M = "sl_m"

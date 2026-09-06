@@ -79,6 +79,18 @@ class PositionGuard:
     def is_armed(self) -> bool:
         return self.entry_price is not None
 
+    def resting_stop_price(self, entry_price: float) -> float | None:
+        """The price a protective stop order should be parked at, or None if no fixed stop is
+        configured.
+
+        Only the fixed stop can rest at the exchange: a trailing stop moves with the
+        high-water mark, so it stays polled. Where both are set this returns the fixed level
+        and the trailing one keeps running alongside it as the tighter, slower guard.
+        """
+        if not self.stop_loss_pct:
+            return None
+        return round(entry_price * (1 - self.stop_loss_pct / 100), 2)
+
     # --- checks -------------------------------------------------------------
 
     def entry_allowed(self, now: datetime) -> tuple[bool, str]:

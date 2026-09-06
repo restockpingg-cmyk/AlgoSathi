@@ -10,8 +10,8 @@ from loguru import logger
 from algosathi.broker.base import BrokerAdapter
 from algosathi.broker.paper_broker import PaperBroker
 from algosathi.config import Settings, get_settings
-from algosathi.core.enums import Mode, Side, SignalType
-from algosathi.core.models import Signal
+from algosathi.core.enums import Mode, OrderType, Side, SignalType
+from algosathi.core.models import Fill, OrderRequest, Signal
 from algosathi.logging_setup import setup_logging
 from algosathi.persistence.db import get_session_factory, record_fill
 from algosathi.persistence.supabase_status import is_trading_enabled, push_signal, push_status
@@ -83,6 +83,50 @@ def describe_strategy(strategy: Strategy) -> str:
     return type(strategy).__name__
 
 
+def place_resting_stop(
+    broker: BrokerAdapter, guard: PositionGuard, symbol: str, fill: Fill
+) -> str | None:
+    """Parks a stop-loss order at the exchange right after entering.
+
+    This is the difference between a stop that triggers on tick and one that waits for the
+    bot's next poll — with 5-minute candles and a 60-second interval the polled stop can be
+    six minutes late, which in a fast move is most of the damage. The polled PositionGuard
+    stays active regardless, as the backstop for the trailing stop and as cover for brokers
+    that cannot rest orders.
+    """
+    stop_price = guard.resting_stop_price(fill.price)
+    if stop_price is None:
+        return None
+
+    try:
+        order_id = broker.place_resting_order(
+            OrderRequest(
+                symbol=symbol,
+                side=Side.SELL,
+                quantity=fill.quantity,
+                order_type=OrderType.SL_M,
+                trigger_price=stop_price,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"{symbol}: could not park a stop at {stop_price} — {exc}")
+        return None
+
+    if order_id:
+        logger.info(f"{symbol}: stop-loss order resting at {stop_price}")
+    return order_id
+
+
+def cancel_resting_stop(broker: BrokerAdapter, order_id: str | None) -> None:
+    if not order_id:
+        return None
+    try:
+        broker.cancel_order(order_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"could not cancel resting stop {order_id} — cancel it manually: {exc}")
+    return None
+
+
 def build_risk_manager(settings: Settings) -> RiskManager:
     cfg = settings.yaml.risk
     return RiskManager(
@@ -108,7 +152,11 @@ def build_broker(settings: Settings) -> BrokerAdapter:
         from algosathi.broker.upstox_broker import UpstoxBroker
 
         token = get_valid_token(settings)
-        return UpstoxBroker(access_token=token, trade_recorder=trade_recorder)
+        return UpstoxBroker(
+            access_token=token,
+            exchange=settings.yaml.exchange,
+            trade_recorder=trade_recorder,
+        )
 
     return PaperBroker(starting_cash=settings.yaml.paper.starting_cash, trade_recorder=trade_recorder)
 
@@ -154,6 +202,7 @@ def run_live(settings: Settings) -> None:
     provider = UpstoxHistoricalProvider(access_token=token)
 
     guard = PositionGuard(settings.yaml.risk.exits)
+    resting_stop_id: str | None = None
     strategy_name = describe_strategy(strategy)
     logger.info(f"Starting live loop for {symbol} in {settings.mode.value} mode ({strategy_name})")
 
@@ -192,6 +241,15 @@ def run_live(settings: Settings) -> None:
                 broker.update_market_price(symbol, latest_close)
 
             position = broker.get_position(symbol)
+
+            # A stop resting at the exchange fires without telling us. If the guard thinks we
+            # are in a position but the broker says we are flat, that is what happened —
+            # re-sync rather than carrying a phantom position that would block the next entry.
+            if guard.is_armed and position.is_flat:
+                logger.warning(f"{symbol}: position closed at the broker — resting stop fired")
+                guard.on_exit()
+                resting_stop_id = None
+
             unrealized = (
                 (latest_close - position.avg_price) * position.quantity if position.quantity else 0.0
             )
@@ -240,8 +298,13 @@ def run_live(settings: Settings) -> None:
                     if fill is not None:
                         if fill.side == Side.BUY:
                             guard.on_entry(fill.price)
+                            resting_stop_id = place_resting_stop(broker, guard, symbol, fill)
                         else:
                             guard.on_exit()
+                            # The strategy got out before the stop did, so the stop must be
+                            # pulled — a live stop order left behind would sell a position
+                            # that no longer exists and open a short.
+                            resting_stop_id = cancel_resting_stop(broker, resting_stop_id)
                 push_signal(settings, signal, latest_close, acted=fill is not None)
 
             heartbeat(

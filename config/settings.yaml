@@ -26,11 +26,17 @@ risk:
   # Position-level exits, checked before the strategy on every candle. Percentages are of the
   # entry price; times are exchange-local (IST). null switches a rule off.
   exits:
-    stop_loss_pct: null
+    # Two layers, on purpose. This one is placed as a real SL-M order resting at the exchange
+    # the moment we enter, so it triggers on tick. It is set wide because the trailing stop
+    # below does the ordinary work — this exists for the gap or crash that moves further than
+    # 2% inside a single poll window, which the polled stop would be minutes late for. On the
+    # INFY window it never fires, which is the point: it costs nothing until it matters.
+    stop_loss_pct: 2.0
     target_pct: null
     # Caps the give-back from the best price since entry. On the INFY window this cut max
     # drawdown from 40.20 to 12.00 — the drawdown reduction is the point; treat the P&L
-    # difference as noise.
+    # difference as noise. A trailing level moves with the high-water mark so it cannot rest
+    # at the exchange; it stays polled, and is therefore only as fast as the candle interval.
     trailing_stop_pct: 1.0
     # Deliberately off. This strategy holds positions across days (RSI can take days to
     # reach 65), so forcing a daily square-off cut INFY from +110 to +23 and NIFTY to -390.

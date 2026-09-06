@@ -32,6 +32,8 @@ class OrderRequest:
     quantity: int
     order_type: OrderType = OrderType.MARKET
     limit_price: float | None = None
+    # Price at which a resting SL/SL_M order activates. Ignored for market/limit orders.
+    trigger_price: float | None = None
 
 
 @dataclass(frozen=True)
