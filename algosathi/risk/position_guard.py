@@ -79,6 +79,35 @@ class PositionGuard:
     def is_armed(self) -> bool:
         return self.entry_price is not None
 
+    def levels(self) -> dict[str, float | None]:
+        """The prices this guard would act on, for display.
+
+        Read-only view of what is already decided internally — the dashboard should never
+        recompute stop levels from percentages, or it will eventually disagree with the guard
+        that actually fires them.
+        """
+        if self.entry_price is None:
+            return {"stop": None, "target": None, "trailing": None, "high_water": None}
+
+        return {
+            "stop": (
+                round(self.entry_price * (1 - self.stop_loss_pct / 100), 2)
+                if self.stop_loss_pct
+                else None
+            ),
+            "target": (
+                round(self.entry_price * (1 + self.target_pct / 100), 2)
+                if self.target_pct
+                else None
+            ),
+            "trailing": (
+                round(self.high_water * (1 - self.trailing_stop_pct / 100), 2)
+                if self.trailing_stop_pct and self.high_water
+                else None
+            ),
+            "high_water": self.high_water,
+        }
+
     def resting_stop_price(self, entry_price: float) -> float | None:
         """The price a protective stop order should be parked at, or None if no fixed stop is
         configured.

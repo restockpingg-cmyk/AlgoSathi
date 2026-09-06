@@ -15,7 +15,7 @@ from algosathi.core.enums import Mode, OrderType, Side, SignalType
 from algosathi.core.models import Fill, OrderRequest, Signal
 from algosathi.logging_setup import setup_logging
 from algosathi.persistence.db import get_session_factory, record_fill
-from algosathi.risk.day_ledger import open_positions, realized_pnl_today
+from algosathi.risk.day_ledger import day_pnl, open_positions, realized_pnl_today
 from algosathi.persistence.supabase_status import is_trading_enabled, push_signal, push_status
 from algosathi.persistence.supabase_strategies import fetch_active_strategy
 from algosathi.persistence.supabase_sync import push_fill
@@ -118,7 +118,11 @@ def build_broker(settings: Settings) -> BrokerAdapter:
             trade_recorder=trade_recorder,
         )
 
-    return PaperBroker(starting_cash=settings.yaml.paper.starting_cash, trade_recorder=trade_recorder)
+    return PaperBroker(
+        starting_cash=settings.yaml.paper.starting_cash,
+        trade_recorder=trade_recorder,
+        charges_config=settings.yaml.paper.charges,
+    )
 
 
 def run_replay(settings: Settings, candles: pd.DataFrame) -> PaperBroker:
@@ -201,8 +205,10 @@ def run_live(settings: Settings) -> None:
     def heartbeat(market_open: bool, error: str | None = None) -> None:
         """One status row per symbol, so the dashboard can tell which symbol is holding what
         rather than showing a single blurred total."""
+        pnl = day_pnl(session_factory, settings.mode)
         for worker in workers:
             position = broker.get_position(worker.symbol)
+            levels = worker.guard.levels()
             push_status(
                 settings,
                 symbol=worker.symbol,
@@ -215,8 +221,15 @@ def run_live(settings: Settings) -> None:
                 last_price=worker.last_price,
                 position_qty=position.quantity,
                 position_avg_price=position.avg_price if position.quantity else None,
+                invested=position.avg_price * position.quantity if position.quantity else None,
+                stop_price=levels["stop"],
+                target_price=levels["target"],
+                trailing_stop_price=levels["trailing"],
+                high_water_price=levels["high_water"],
                 cash=broker.get_funds(),
-                realized_pnl=realized_pnl_today(session_factory, settings.mode),
+                realized_pnl=pnl.net,
+                gross_realized_pnl=pnl.gross,
+                total_charges=pnl.charges,
                 unrealized_pnl=worker.unrealized_pnl(),
                 last_error=error or worker.last_error,
             )

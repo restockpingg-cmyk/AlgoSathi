@@ -44,6 +44,9 @@ class Fill:
     price: float
     timestamp: datetime
     order_id: str
+    # Brokerage, taxes and fees on this leg. Zero for live fills until the broker reports
+    # them; the paper broker computes them so paper P&L is comparable to live P&L.
+    charges: float = 0.0
 
 
 @dataclass

@@ -48,8 +48,30 @@ class RiskConfig(BaseModel):
     exits: ExitRulesConfig = ExitRulesConfig()
 
 
+class ChargesConfig(BaseModel):
+    """Trading costs applied to paper fills, so paper results are comparable to live ones.
+
+    All percentages are of leg turnover. Defaults are ballpark figures for Indian equity
+    delivery — check them against your own broker's calculator, since rates differ by broker
+    and by product (intraday STT is lower than delivery, for instance).
+    """
+
+    enabled: bool = True
+    brokerage_flat: float = 20.0  # per order; the lower of this and brokerage_pct applies
+    brokerage_pct: float = 0.03
+    stt_pct_buy: float = 0.1
+    stt_pct_sell: float = 0.1
+    exchange_pct: float = 0.00325
+    sebi_pct: float = 0.0001
+    stamp_duty_pct_buy: float = 0.015
+    gst_pct: float = 18.0
+    # Not a charge but a worse fill: buys land above the quote, sells below it.
+    slippage_pct: float = 0.02
+
+
 class PaperConfig(BaseModel):
     starting_cash: float = 100_000.0
+    charges: ChargesConfig = ChargesConfig()
 
 
 class YamlConfig(BaseModel):

@@ -12,6 +12,7 @@ the day started fresh would carry straight on losing.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime
 
 
@@ -21,9 +22,26 @@ from algosathi.core.enums import Mode
 from algosathi.persistence.models import Trade
 
 
-def realized_pnl_today(
+@dataclass(frozen=True)
+class DayPnl:
+    """Today's result, before and after what it cost to trade.
+
+    Both are reported because on a small edge they disagree by more than the edge: showing
+    only the gross number makes a losing system look profitable, and showing only the net one
+    hides whether the strategy or the costs are the problem.
+    """
+
+    gross: float
+    charges: float
+
+    @property
+    def net(self) -> float:
+        return self.gross - self.charges
+
+
+def day_pnl(
     session_factory: sessionmaker[Session], mode: Mode, today: date | None = None
-) -> float:
+) -> DayPnl:
     """Weighted-average-cost realized P&L across every symbol traded today.
 
     Matches analytics.summarize_by_symbol's accounting so the circuit breaker and the reports
@@ -41,6 +59,7 @@ def realized_pnl_today(
         )
 
     realized = 0.0
+    charges = 0.0
     quantities: dict[str, int] = {}
     avg_costs: dict[str, float] = {}
 
@@ -48,6 +67,8 @@ def realized_pnl_today(
         symbol = trade.symbol
         held = quantities.get(symbol, 0)
         avg = avg_costs.get(symbol, 0.0)
+        # Charges are paid on every leg, including the ones still holding an open position.
+        charges += trade.charges or 0.0
 
         if trade.side == "buy":
             new_held = held + trade.quantity
@@ -60,7 +81,15 @@ def realized_pnl_today(
             if remaining <= 0:
                 avg_costs[symbol] = 0.0
 
-    return realized
+    return DayPnl(gross=realized, charges=charges)
+
+
+def realized_pnl_today(
+    session_factory: sessionmaker[Session], mode: Mode, today: date | None = None
+) -> float:
+    """Net of charges — this is what the daily-loss circuit breaker must measure, because
+    charges come out of the same account the losses do."""
+    return day_pnl(session_factory, mode, today).net
 
 
 def open_positions(session_factory: sessionmaker[Session], mode: Mode) -> dict[str, int]:

@@ -5,9 +5,9 @@ from typing import Any
 
 import pandas as pd
 
-from algosathi.analytics import equity_curve, summarize_by_symbol
+from algosathi.analytics import equity_curve
 from algosathi.broker.paper_broker import PaperBroker
-from algosathi.config import RiskConfig
+from algosathi.config import ChargesConfig, RiskConfig
 from algosathi.core.models import Fill
 from algosathi.risk.position_guard import PositionGuard
 from algosathi.risk.risk_manager import RiskManager
@@ -22,6 +22,10 @@ class BacktestResult:
     realized_pnl: float
     win_rate: float
     max_drawdown: float
+    # What the same trades would have made if trading were free, and what they cost. On a
+    # small edge the difference exceeds the edge, so both belong in every report.
+    gross_realized_pnl: float = 0.0
+    total_charges: float = 0.0
     equity_curve: list[dict[str, Any]] = field(default_factory=list)
     trades: list[Fill] = field(default_factory=list)
 
@@ -69,6 +73,7 @@ def run_strategy_backtest(
     candles: pd.DataFrame,
     risk_config: RiskConfig,
     starting_cash: float = 100_000.0,
+    charges_config: ChargesConfig | None = None,
 ) -> BacktestResult:
     """Runs any Strategy through the exact same simulation loop the live bot uses
     (simulation.py), then computes performance metrics. Note: an open position at the end of
@@ -81,21 +86,30 @@ def run_strategy_backtest(
         capital_per_trade=risk_config.capital_per_trade,
         lot_size=risk_config.lot_size,
     )
-    broker = PaperBroker(starting_cash=starting_cash, trade_recorder=trades.append)
+    broker = PaperBroker(
+        starting_cash=starting_cash,
+        trade_recorder=trades.append,
+        charges_config=charges_config,
+    )
     guard = PositionGuard(risk_config.exits)
 
     simulate_candles(strategy, risk_manager, broker, symbol, candles, guard=guard)
 
+    # The curve is drawn at fill prices, before charges — it shows the shape of the
+    # strategy, while realized_pnl below is what the account actually ends up with.
     curve = equity_curve(trades)
-    summary = summarize_by_symbol(trades)
 
     return BacktestResult(
         total_trades=len(trades),
-        realized_pnl=float(summary["realized_pnl"].sum()) if not summary.empty else 0.0,
+        # From the broker, not from analytics: analytics reprices the fills but has no idea
+        # what they cost, so its number is gross of charges no matter what the config says.
+        realized_pnl=broker.realized_pnl,
         win_rate=_win_rate(trades),
         max_drawdown=_max_drawdown(curve),
         equity_curve=curve.to_dict("records") if not curve.empty else [],
         trades=trades,
+        gross_realized_pnl=broker.gross_realized_pnl,
+        total_charges=broker.total_charges,
     )
 
 
@@ -105,6 +119,7 @@ def run_backtest(
     candles: pd.DataFrame,
     risk_config: RiskConfig,
     starting_cash: float = 100_000.0,
+    charges_config: ChargesConfig | None = None,
 ) -> BacktestResult:
     """Backtests a rule-tree definition — the format the web builder produces."""
     return run_strategy_backtest(
@@ -113,4 +128,5 @@ def run_backtest(
         candles,
         risk_config,
         starting_cash,
+        charges_config,
     )

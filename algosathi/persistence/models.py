@@ -23,3 +23,6 @@ class Trade(Base):
     price: Mapped[float] = mapped_column(Float)
     timestamp: Mapped[datetime] = mapped_column(DateTime)
     mode: Mapped[str] = mapped_column(String)
+    # Brokerage, taxes and fees on this fill, so realized P&L can be reported both gross and
+    # net without re-deriving costs from rates that may since have changed.
+    charges: Mapped[float] = mapped_column(Float, default=0.0)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from algosathi.core.enums import Mode
@@ -17,7 +17,18 @@ def get_engine(db_path: Path = DEFAULT_DB_PATH):
     DATA_DIR.mkdir(exist_ok=True)
     engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine) -> None:
+    """create_all creates missing tables but never alters existing ones, so a database written
+    before a column existed keeps working until something reads that column and fails. Only
+    additive, nullable-with-default columns belong here."""
+    with engine.begin() as connection:
+        existing = {row[1] for row in connection.execute(text("PRAGMA table_info(trades)"))}
+        if existing and "charges" not in existing:
+            connection.execute(text("ALTER TABLE trades ADD COLUMN charges FLOAT DEFAULT 0.0"))
 
 
 def get_session_factory(db_path: Path = DEFAULT_DB_PATH) -> sessionmaker[Session]:
@@ -36,6 +47,7 @@ def record_fill(session_factory: sessionmaker[Session], fill: Fill, mode: Mode) 
                 price=fill.price,
                 timestamp=fill.timestamp,
                 mode=mode.value,
+                charges=fill.charges,
             )
         )
         session.commit()
