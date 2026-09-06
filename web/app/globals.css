@@ -56,11 +56,18 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Money must line up in a column. Every price, quantity and P&L figure uses this. */
+/* Figures must line up in a column, but monospace reads as a terminal printout rather than
+   as money — the sans face already has tabular figures, which is the part that matters. */
 .num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Reserved for dense repeated rows where the eye scans down a column of prices. */
+.num-dense {
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  font-size: 0.8125rem;
 }
 
 @media (prefers-reduced-motion: reduce) {

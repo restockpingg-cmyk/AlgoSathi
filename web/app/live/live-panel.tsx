@@ -8,7 +8,6 @@ type Status = {
   mode: string | null;
   strategy_name: string | null;
   market_open: boolean | null;
-  last_candle_at: string | null;
   last_price: number | null;
   position_qty: number;
   position_avg_price: number | null;
@@ -72,19 +71,19 @@ function ago(iso: string, now: number) {
   return `${Math.round(s / 3600)}h ago`;
 }
 
-const tone = (v: number) => (v > 0 ? "text-up" : v < 0 ? "text-down" : "text-ink-soft");
+const tone = (v: number) => (v > 0 ? "text-up" : v < 0 ? "text-down" : "text-ink");
 
 /** Where the price sits between the stop and the target.
  *
  * A position is really four numbers — what you paid, what it is worth, where you get out at a
- * loss, and where you take the profit — and their *ordering* is what tells you whether you
- * are in trouble. A table of four figures makes you do that comparison in your head; a scale
- * does it for you. This is the one place the dashboard spends its ink.
+ * loss, and where you take the profit — and their *ordering* is what tells you whether you are
+ * in trouble. A table of four figures makes you do that comparison in your head; a scale does
+ * it for you. This is the one place the page spends its ink.
  */
 function PriceLadder({ s }: { s: Status }) {
   const entry = s.position_avg_price ?? 0;
   const price = s.last_price ?? entry;
-  // The active stop is whichever sits higher: the trailing one once it has climbed above the
+  // The live stop is whichever sits higher: the trailing one once it has climbed above the
   // fixed one, otherwise the fixed one.
   const stop = Math.max(s.stop_price ?? 0, s.trailing_stop_price ?? 0) || null;
   const target = s.target_price;
@@ -100,9 +99,8 @@ function PriceLadder({ s }: { s: Status }) {
   if (target) marks.push({ value: target, label: "Target", kind: "target" });
 
   return (
-    <div className="mt-4">
+    <div className="mt-5">
       <div className="relative h-2 rounded-full bg-line">
-        {/* Everything above the stop is capital still at risk but protected. */}
         {stop && (
           <div
             className="absolute inset-y-0 rounded-full bg-accent-wash"
@@ -112,23 +110,33 @@ function PriceLadder({ s }: { s: Status }) {
         {marks.map((m) => (
           <div
             key={m.label}
-            className={`absolute top-1/2 h-3.5 w-0.5 -translate-y-1/2 ${
+            className={`absolute top-1/2 h-4 w-0.5 -translate-y-1/2 ${
               m.kind === "stop" ? "bg-down" : m.kind === "target" ? "bg-up" : "bg-ink-faint"
             }`}
             style={{ left: pos(m.value) }}
           />
         ))}
         <div
-          className="absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white bg-accent shadow-[0_1px_4px_rgba(13,21,51,0.35)]"
+          className="absolute top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-white bg-accent shadow-[0_1px_5px_rgba(13,21,51,0.4)]"
           style={{ left: pos(price) }}
           aria-label={`Current price ${money(price)}`}
         />
       </div>
 
-      <dl className="mt-3 grid grid-cols-3 gap-2 text-center">
+      {/* A legend, not a scale. Marks sit at their real price, which routinely puts the stop
+          and the entry within a couple of percent of each other — labels placed under them
+          would collide, and labels spread evenly instead would point at the wrong marks. The
+          bar carries the position; this only decodes the colours. */}
+      <dl className="mt-3.5 flex flex-wrap items-baseline gap-x-5 gap-y-1.5">
         {marks.map((m) => (
-          <div key={m.label}>
-            <dt className="text-[11px] font-medium tracking-wide text-ink-faint">{m.label}</dt>
+          <div key={m.label} className="flex items-baseline gap-1.5">
+            <span
+              className={`h-1.5 w-1.5 shrink-0 translate-y-[-1px] rounded-full ${
+                m.kind === "stop" ? "bg-down" : m.kind === "target" ? "bg-up" : "bg-ink-faint"
+              }`}
+              aria-hidden
+            />
+            <dt className="text-[11px] text-ink-faint">{m.label}</dt>
             <dd
               className={`num text-sm font-semibold ${
                 m.kind === "stop" ? "text-down" : m.kind === "target" ? "text-up" : "text-ink"
@@ -141,10 +149,13 @@ function PriceLadder({ s }: { s: Status }) {
       </dl>
 
       {s.trailing_stop_price != null && (
-        <p className="mt-2 text-xs text-ink-soft">
-          Trailing stop at <span className="num font-semibold">{money(s.trailing_stop_price)}</span>
+        <p className="mt-3 border-t border-line pt-3 text-xs text-ink-soft">
+          Trailing stop <span className="num font-semibold text-ink">{money(s.trailing_stop_price)}</span>
           {s.high_water_price != null && (
-            <> · high since entry <span className="num">{money(s.high_water_price)}</span></>
+            <>
+              {" · high since entry "}
+              <span className="num font-semibold text-ink">{money(s.high_water_price)}</span>
+            </>
           )}
         </p>
       )}
@@ -157,33 +168,26 @@ function PositionCard({ s, now }: { s: Status; now: number }) {
   const pct = s.invested ? (pnl / s.invested) * 100 : 0;
 
   return (
-    <article className="rounded-2xl border border-line bg-card p-5">
-      <header className="flex items-start justify-between gap-3">
+    <article className="rounded-2xl border border-line bg-card p-6">
+      <header className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-lg font-semibold tracking-tight">{s.symbol}</h3>
-          <p className="num mt-0.5 text-sm text-ink-soft">
-            {s.position_qty} @ {money(s.position_avg_price)}
+          <h3 className="text-xl font-bold tracking-tight">{s.symbol}</h3>
+          <p className="num mt-1 text-sm text-ink-soft">
+            {s.position_qty} @ {money(s.position_avg_price)} · {money(s.invested, 0)} invested
           </p>
         </div>
         <div className="text-right">
-          <p className={`num text-xl font-bold ${tone(pnl)}`}>{signed(pnl)}</p>
-          <p className={`num text-xs font-medium ${tone(pnl)}`}>
+          <p className={`num text-2xl font-bold tracking-tight ${tone(pnl)}`}>{signed(pnl)}</p>
+          <p className={`num text-xs font-semibold ${tone(pnl)}`}>
             {pct >= 0 ? "+" : "−"}
             {Math.abs(pct).toFixed(2)}%
           </p>
         </div>
       </header>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div className="rounded-xl bg-surface px-3 py-2">
-          <p className="text-[11px] text-ink-faint">Invested</p>
-          <p className="num font-semibold">{money(s.invested)}</p>
-        </div>
-        <div className="rounded-xl bg-surface px-3 py-2">
-          <p className="text-[11px] text-ink-faint">Current price</p>
-          <p className="num font-semibold">{money(s.last_price)}</p>
-        </div>
-      </div>
+      <p className="mt-4 text-sm text-ink-soft">
+        Now trading at <span className="num text-base font-bold text-ink">{money(s.last_price)}</span>
+      </p>
 
       <PriceLadder s={s} />
 
@@ -258,43 +262,65 @@ export function LivePanel() {
   const total = data.realizedPnl + data.unrealizedPnl;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-8">
       {error && (
         <p className="rounded-xl border border-down/30 bg-down-wash px-4 py-3 text-sm text-down">
           {error}
         </p>
       )}
 
-      {/* Status and the one control that matters, sized for a thumb. */}
-      <section className="overflow-hidden rounded-2xl border border-line bg-card">
-        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-          <div className="flex items-center gap-3">
+      {/* One anchor for the page. Status, the day's result and the only control that matters
+          belong together — split across separate cards they read as three equal facts, when
+          they actually answer one question: is this running, and is it making money. */}
+      <section className="overflow-hidden rounded-3xl border border-line bg-card shadow-[0_1px_2px_rgba(13,21,51,0.04),0_16px_40px_-20px_rgba(47,63,232,0.22)]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-6 py-3.5 text-sm">
+          <span className="flex items-center gap-2 font-semibold">
             <span
-              className={`h-2.5 w-2.5 rounded-full ${online ? "bg-up" : "bg-ink-faint"}`}
+              className={`h-2 w-2 rounded-full ${online ? "bg-up" : "bg-ink-faint"}`}
               aria-hidden
             />
-            <div>
-              <p className="font-semibold tracking-tight">
-                {online ? "Bot online" : "Bot offline"}
-                {newest?.mode && (
-                  <span className="ml-2 rounded-full bg-accent-wash px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-accent-deep">
-                    {newest.mode}
-                  </span>
-                )}
-              </p>
-              <p className="mt-0.5 text-xs text-ink-soft">
-                {online
-                  ? `${statuses.length} watched · ${held.length} held · beat ${ago(newest!.updated_at, now)}`
-                  : "Start the bot on your machine: python -m algosathi.runner"}
-              </p>
-            </div>
+            {online ? "Online" : "Offline"}
+          </span>
+          {newest?.mode && (
+            <span className="rounded-full bg-accent-wash px-2.5 py-0.5 text-xs font-bold uppercase tracking-wider text-accent-deep">
+              {newest.mode}
+            </span>
+          )}
+          <span className="text-ink-soft">{data.activeStrategy?.name ?? "No strategy active"}</span>
+          {data.tradingEnabled && data.lockedStrategyId != null && (
+            <span className="rounded-full bg-warn-wash px-2.5 py-0.5 text-xs font-semibold text-warn">
+              Locked
+            </span>
+          )}
+          <span className="ml-auto text-xs text-ink-faint">
+            {online
+              ? `${statuses.length} watched · ${held.length} held · ${ago(newest!.updated_at, now)}`
+              : "no heartbeat"}
+          </span>
+        </div>
+
+        <div className="flex flex-col gap-6 px-6 py-8 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-ink-soft">Today, after charges</p>
+            <p
+              className={`num mt-1.5 text-6xl font-bold leading-none tracking-tighter ${tone(
+                data.realizedPnl
+              )}`}
+            >
+              {signed(data.realizedPnl)}
+            </p>
+            <p className="mt-3.5 text-sm text-ink-soft">
+              <span className="num font-semibold text-ink">{signed(data.grossRealizedPnl)}</span>{" "}
+              before charges of{" "}
+              <span className="num font-semibold text-ink">{money(data.charges)}</span>
+            </p>
           </div>
 
           <button
             type="button"
             onClick={toggleTrading}
             disabled={busy}
-            className={`w-full rounded-xl px-5 py-3 text-sm font-semibold text-white transition disabled:opacity-50 sm:w-auto ${
+            className={`w-full shrink-0 rounded-2xl px-8 py-4 text-base font-semibold text-white shadow-sm transition disabled:opacity-50 sm:w-auto ${
               data.tradingEnabled ? "bg-down hover:brightness-95" : "bg-accent hover:brightness-110"
             }`}
           >
@@ -302,87 +328,60 @@ export function LivePanel() {
           </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line bg-surface px-5 py-3 text-xs">
-          <span className="text-ink-faint">Strategy</span>
-          <span className="font-semibold">{data.activeStrategy?.name ?? "none active"}</span>
-          {data.tradingEnabled && data.lockedStrategyId != null && (
-            <span className="rounded-full bg-warn-wash px-2 py-0.5 font-semibold text-warn">
-              Locked while trading
-            </span>
-          )}
-        </div>
+        <dl className="grid grid-cols-3 divide-x divide-line border-t border-line text-center">
+          {[
+            { label: "Open", value: signed(data.unrealizedPnl), cls: tone(data.unrealizedPnl) },
+            { label: "Total", value: signed(total), cls: tone(total) },
+            { label: "Cash", value: money(data.cash), cls: "text-ink" },
+          ].map((cell) => (
+            <div key={cell.label} className="px-3 py-4">
+              <dt className="text-xs text-ink-faint">{cell.label}</dt>
+              <dd className={`num mt-1 text-lg font-semibold ${cell.cls}`}>{cell.value}</dd>
+            </div>
+          ))}
+        </dl>
       </section>
 
-      {!online && data.tradingEnabled && (
-        <p className="rounded-xl border border-warn/30 bg-warn-wash px-4 py-3 text-sm text-warn">
-          Trading is armed but no bot is reporting. Nothing will trade until the process is
-          running on your machine.
-        </p>
-      )}
-
-      {!data.tradingEnabled && (
-        <p className="rounded-xl border border-line bg-card px-4 py-3 text-sm text-ink-soft">
-          New entries are paused. Exits still go through, so an open position can always be
-          closed.
+      {!online && (
+        <p className="rounded-2xl border border-line bg-card px-5 py-4 text-sm text-ink-soft">
+          {data.tradingEnabled ? (
+            <>
+              <strong className="text-warn">Trading is armed but nothing is reporting.</strong>{" "}
+              Nothing will trade until the bot is running on your machine.
+            </>
+          ) : (
+            <>
+              Start the bot on your machine to see it here:{" "}
+              <code className="rounded bg-surface px-1.5 py-0.5 text-[13px]">
+                python -m algosathi.runner
+              </code>
+            </>
+          )}
         </p>
       )}
 
       {errored.map((s) => (
         <p
           key={s.symbol}
-          className="rounded-xl border border-down/30 bg-down-wash px-4 py-3 text-sm text-down"
+          className="rounded-2xl border border-down/30 bg-down-wash px-5 py-4 text-sm text-down"
         >
           <strong>{s.symbol}</strong> — {s.last_error}
         </p>
       ))}
 
-      {/* The two numbers, side by side. Gross is what a free-trading simulation would show; */}
-      {/* net is what reaches the account. */}
-      <section className="rounded-2xl border border-line bg-card p-5">
-        <h2 className="text-xs font-semibold uppercase tracking-widest text-ink-faint">
-          Today
-        </h2>
-        <div className="mt-3 grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-xs text-ink-soft">After charges</p>
-            <p className={`num text-3xl font-bold tracking-tight ${tone(data.realizedPnl)}`}>
-              {signed(data.realizedPnl)}
-            </p>
-          </div>
-          <div>
-            <p className="text-xs text-ink-soft">Before charges</p>
-            <p className="num text-3xl font-bold tracking-tight text-ink-soft">
-              {signed(data.grossRealizedPnl)}
-            </p>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1 border-t border-line pt-3 text-xs">
-          <span className="text-ink-soft">
-            Charges <span className="num font-semibold text-down">−{money(data.charges)}</span>
-          </span>
-          <span className="text-ink-soft">
-            Open <span className={`num font-semibold ${tone(data.unrealizedPnl)}`}>{signed(data.unrealizedPnl)}</span>
-          </span>
-          <span className="text-ink-soft">
-            Total <span className={`num font-semibold ${tone(total)}`}>{signed(total)}</span>
-          </span>
-          <span className="text-ink-soft">
-            Cash <span className="num font-semibold text-ink">{money(data.cash)}</span>
-          </span>
-        </div>
-      </section>
-
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-          Positions {held.length > 0 && `(${held.length})`}
+        <h2 className="mb-3 text-base font-semibold tracking-tight">
+          Positions {held.length > 0 && <span className="text-ink-faint">({held.length})</span>}
         </h2>
         {held.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-line bg-card px-4 py-6 text-center text-sm text-ink-soft">
-            Nothing held. Positions appear here with their stop and target as soon as the
-            strategy buys.
+          <p className="rounded-2xl border border-line bg-card px-5 py-8 text-center text-sm text-ink-soft">
+            Nothing held right now.
+            <span className="mt-1 block text-xs text-ink-faint">
+              Positions appear here with their stop and target the moment the strategy buys.
+            </span>
           </p>
         ) : (
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(340px,1fr))]">
             {held.map((s) => (
               <PositionCard key={s.symbol} s={s} now={now} />
             ))}
@@ -390,76 +389,45 @@ export function LivePanel() {
         )}
       </section>
 
-      {flat.length > 0 && (
-        <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-            Watching ({flat.length})
-          </h2>
-          <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-card">
-            {flat.map((s) => (
-              <li key={s.symbol} className="flex items-center justify-between px-4 py-3 text-sm">
-                <span className="font-medium">{s.symbol}</span>
-                <span className="num text-ink-soft">{money(s.last_price)}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <div className="grid gap-5 lg:grid-cols-2">
-        <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-            Signals
-          </h2>
-          {data.signals.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-line bg-card px-4 py-6 text-center text-sm text-ink-soft">
-              Every signal shows up here with its reason, whether or not risk let it through.
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {data.signals.map((s) => (
-                <li key={s.id} className="rounded-xl border border-line bg-card px-4 py-3">
-                  <div className="flex items-center justify-between gap-2 text-sm">
-                    <span className="font-semibold">
-                      <span className={s.signal_type === "buy" ? "text-up" : "text-warn"}>
-                        {s.signal_type.toUpperCase()}
-                      </span>{" "}
-                      {s.symbol}
-                      {!s.acted && (
-                        <span className="ml-2 text-xs font-normal text-ink-faint">not acted on</span>
-                      )}
-                    </span>
-                    <span className="text-xs text-ink-faint">{ago(s.created_at, now)}</span>
-                  </div>
-                  {s.reason && <p className="mt-1 text-xs text-ink-soft">{s.reason}</p>}
+      <div className="grid gap-8 lg:grid-cols-2">
+        {flat.length > 0 && (
+          <section>
+            <h2 className="mb-3 text-base font-semibold tracking-tight">
+              Watching <span className="text-ink-faint">({flat.length})</span>
+            </h2>
+            <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-card">
+              {flat.map((s) => (
+                <li key={s.symbol} className="flex items-center justify-between px-5 py-3">
+                  <span className="text-sm font-medium">{s.symbol}</span>
+                  <span className="num text-ink-soft">{money(s.last_price)}</span>
                 </li>
               ))}
             </ul>
-          )}
-        </section>
+          </section>
+        )}
 
         <section>
-          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-ink-faint">
-            Fills
-          </h2>
+          <h2 className="mb-3 text-base font-semibold tracking-tight">Recent fills</h2>
           {data.trades.length === 0 ? (
-            <p className="rounded-2xl border border-dashed border-line bg-card px-4 py-6 text-center text-sm text-ink-soft">
+            <p className="rounded-2xl border border-line bg-card px-5 py-8 text-center text-sm text-ink-soft">
               No fills yet.
             </p>
           ) : (
             <ul className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-card">
-              {data.trades.map((t) => (
-                <li key={t.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                  <span className="font-medium">
-                    <span className={t.side === "buy" ? "text-up" : "text-warn"}>
-                      {t.side.toUpperCase()}
+              {data.trades.slice(0, 8).map((t) => (
+                <li key={t.id} className="flex items-center justify-between px-5 py-3">
+                  <span className="text-sm">
+                    <span
+                      className={`font-semibold ${t.side === "buy" ? "text-up" : "text-warn"}`}
+                    >
+                      {t.side === "buy" ? "Bought" : "Sold"}
                     </span>{" "}
                     {t.quantity} {t.symbol}
                   </span>
                   <span className="text-right">
                     <span className="num block font-semibold">{money(t.price)}</span>
                     {t.charges ? (
-                      <span className="num block text-[11px] text-ink-faint">
+                      <span className="block text-[11px] text-ink-faint">
                         fees {money(t.charges)}
                       </span>
                     ) : null}
@@ -470,6 +438,41 @@ export function LivePanel() {
           )}
         </section>
       </div>
+
+      <section>
+        <h2 className="mb-3 text-base font-semibold tracking-tight">Signals</h2>
+        {data.signals.length === 0 ? (
+          <p className="rounded-2xl border border-line bg-card px-5 py-8 text-center text-sm text-ink-soft">
+            Nothing yet.
+            <span className="mt-1 block text-xs text-ink-faint">
+              Every signal lands here with the reason it fired, whether or not risk let it
+              through.
+            </span>
+          </p>
+        ) : (
+          <ul className="grid gap-3 sm:grid-cols-2">
+            {data.signals.map((s) => (
+              <li key={s.id} className="rounded-2xl border border-line bg-card px-5 py-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm font-semibold">
+                    <span className={s.signal_type === "buy" ? "text-up" : "text-warn"}>
+                      {s.signal_type === "buy" ? "Buy" : "Exit"}
+                    </span>{" "}
+                    {s.symbol}
+                    {!s.acted && (
+                      <span className="ml-2 text-xs font-normal text-ink-faint">not acted on</span>
+                    )}
+                  </span>
+                  <span className="text-xs text-ink-faint">{ago(s.created_at, now)}</span>
+                </div>
+                {s.reason && (
+                  <p className="mt-1.5 text-xs leading-relaxed text-ink-soft">{s.reason}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
