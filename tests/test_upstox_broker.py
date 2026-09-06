@@ -89,7 +89,7 @@ def test_refuses_to_record_a_fill_when_no_price_ever_arrives(monkeypatch):
     )
 
     recorded = []
-    with pytest.raises(RuntimeError, match="no traded price"):
+    with pytest.raises(RuntimeError, match="did not reach a terminal status"):
         broker(trade_recorder=recorded.append).place_order(buy())
     assert recorded == []
 
@@ -152,3 +152,85 @@ def test_cancel_reports_whether_the_order_was_there(monkeypatch):
 def test_product_type_is_configurable():
     assert broker()._order_body(buy())["product"] == "D"
     assert broker(product="I")._order_body(buy())["product"] == "I"
+
+
+def test_waits_for_complete_rather_than_booking_a_partial_as_whole(monkeypatch):
+    """A market order can report part of the fill milliseconds before the rest lands. Booking
+    the partial as the whole would leave the account holding more than the trade log says."""
+    monkeypatch.setattr(ub.requests, "post", lambda *a, **k: FakeResponse({"data": {"order_ids": ["OID5"]}}))
+
+    responses = iter(
+        [
+            {"data": {"status": "open", "average_price": 100.0, "filled_quantity": 3}},
+            {"data": {"status": "complete", "average_price": 100.5, "filled_quantity": 10}},
+        ]
+    )
+    monkeypatch.setattr(ub.requests, "get", lambda *a, **k: FakeResponse(next(responses)))
+
+    fill = broker().place_order(buy(quantity=10))
+    assert (fill.quantity, fill.price) == (10, 100.5)
+
+
+def test_a_partial_fill_that_then_cancels_is_still_recorded(monkeypatch):
+    """Whatever traded is a real position, and pretending it did not exist is worse than
+    recording it."""
+    monkeypatch.setattr(ub.requests, "post", lambda *a, **k: FakeResponse({"data": {"order_ids": ["OID6"]}}))
+    monkeypatch.setattr(
+        ub.requests,
+        "get",
+        lambda *a, **k: FakeResponse(
+            {"data": {"status": "cancelled", "average_price": 99.0, "filled_quantity": 4}}
+        ),
+    )
+
+    fill = broker(product="I").place_order(buy(quantity=10))
+    assert (fill.quantity, fill.price) == (4, 99.0)
+
+
+def test_a_sliced_order_is_refused_rather_than_half_tracked(monkeypatch):
+    """Several ids means several live orders. Tracking one and forgetting the rest would
+    leave real orders unmanaged at the exchange."""
+    monkeypatch.setattr(
+        ub.requests, "post", lambda *a, **k: FakeResponse({"data": {"order_ids": ["A", "B", "C"]}})
+    )
+    with pytest.raises(RuntimeError, match="3 order ids"):
+        broker().place_order(buy(quantity=100_000))
+
+
+def test_trigger_pending_is_not_treated_as_terminal(monkeypatch):
+    """A resting stop sits in 'trigger pending' — mistaking that for a finished order would
+    make every parked stop look like a failure."""
+    assert "trigger pending" not in ub.TERMINAL_STATES
+    assert "open" not in ub.TERMINAL_STATES
+
+
+def test_order_placement_is_never_retried(monkeypatch):
+    """Placement is not idempotent. If the request reaches the exchange and only the response
+    is lost, a retry buys twice — so a failed placement gets exactly one attempt."""
+    attempts = []
+
+    def failing_post(*a, **k):
+        attempts.append(1)
+        raise ConnectionError("connection reset")
+
+    monkeypatch.setattr(ub.requests, "post", failing_post)
+
+    with pytest.raises(ConnectionError):
+        broker().place_order(buy())
+    assert len(attempts) == 1
+
+
+def test_reads_are_still_retried(monkeypatch):
+    """Reads are safe to repeat, and a transient blip on the funds call should not stop the
+    bot — only writes are single-attempt."""
+    calls = []
+
+    def flaky_get(*a, **k):
+        calls.append(1)
+        if len(calls) < 3:
+            raise ConnectionError("blip")
+        return FakeResponse({"data": {"equity": {"available_margin": 12345.0}}})
+
+    monkeypatch.setattr(ub.requests, "get", flaky_get)
+    assert broker().get_funds() == 12345.0
+    assert len(calls) == 3

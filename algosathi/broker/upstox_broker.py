@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 
 import requests
+from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from algosathi.broker.base import BrokerAdapter
@@ -21,12 +22,14 @@ FUNDS_URL = "https://api.upstox.com/v2/user/get-funds-and-margin"
 
 # Upstox reports acceptance immediately but takes a moment to report the traded price, so a
 # freshly-placed market order is polled briefly rather than read once.
-FILL_POLL_ATTEMPTS = 6
+FILL_POLL_ATTEMPTS = 10
 FILL_POLL_DELAY_SECONDS = 0.5
 
-# Order states that mean "this will never fill", so polling should stop rather than run out
-# the clock.
-DEAD_ORDER_STATES = {"cancelled", "rejected"}
+# From the Upstox order-status appendix. "complete" is the only status meaning fully executed;
+# the rest of the terminal set means the order is finished and will never fill further.
+# Everything else ("open", "trigger pending", "validation pending", …) is still in flight.
+COMPLETE = "complete"
+TERMINAL_STATES = {COMPLETE, "cancelled", "rejected", "cancelled after market order"}
 
 
 class UpstoxBroker(BrokerAdapter):
@@ -83,14 +86,34 @@ class UpstoxBroker(BrokerAdapter):
             "is_amo": False,
         }
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def _submit(self, order: OrderRequest) -> str:
+        """Places an order. Deliberately NOT retried.
+
+        Placement is not idempotent: if the request reaches the exchange and only the response
+        is lost, a retry places a second real order. Reads are retried freely elsewhere in this
+        class; a write that creates a position gets exactly one attempt, and a failure is
+        raised for a human to reconcile against the order book.
+        """
         response = requests.post(
             PLACE_ORDER_URL, headers=self._headers(), json=self._order_body(order), timeout=15
         )
         response.raise_for_status()
-        return response.json()["data"]["order_ids"][0]
+        order_ids = response.json()["data"]["order_ids"]
 
+        if not order_ids:
+            raise RuntimeError("Upstox accepted the order but returned no order id")
+        if len(order_ids) > 1:
+            # Only sliced orders come back with several ids, and we never set slice=true.
+            # Tracking one and forgetting the rest would leave real orders unmanaged, so
+            # refuse rather than half-handle it.
+            raise RuntimeError(
+                f"Upstox returned {len(order_ids)} order ids ({', '.join(order_ids)}) for a "
+                f"single order — every one of these is live and this code only tracks one. "
+                f"Reconcile them by hand."
+            )
+        return order_ids[0]
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def get_order(self, order_id: str) -> dict:
         response = requests.get(
             ORDER_DETAILS_URL, headers=self._headers(), params={"order_id": order_id}, timeout=15
@@ -99,32 +122,48 @@ class UpstoxBroker(BrokerAdapter):
         return response.json().get("data", {})
 
     def _await_fill_price(self, order_id: str) -> tuple[float, int]:
-        """Polls the order until the exchange reports a traded price.
+        """Polls the order until the exchange reports what actually traded.
 
         Upstox's place-order response confirms acceptance only — it never contains the price
-        you actually got. Recording the order without this step is how a bot ends up with a
-        P&L, a daily-loss limit, and a dashboard all computed from zeros.
+        you got. Recording the order without this step is how a bot ends up with a P&L, a
+        daily-loss limit, and a dashboard all computed from zeros.
+
+        Waits for a terminal status rather than returning on the first non-zero fill: a market
+        order can report a partial fill milliseconds before the rest lands, and booking the
+        partial as the whole would leave the account holding more than the trade log says.
         """
+        last_status = "unknown"
         for attempt in range(FILL_POLL_ATTEMPTS):
             data = self.get_order(order_id)
-            status = str(data.get("status", "")).lower()
+            last_status = str(data.get("status", "")).lower()
             filled = int(data.get("filled_quantity") or 0)
             price = float(data.get("average_price") or 0.0)
 
-            if filled and price:
+            if last_status == COMPLETE and filled and price:
                 return price, filled
-            if status in DEAD_ORDER_STATES:
+
+            if last_status in TERMINAL_STATES:
+                # Cancelled or rejected. A partial fill before that is still a real position
+                # and must be recorded; nothing filled is a clean failure.
+                if filled and price:
+                    logger.warning(
+                        f"order {order_id} ended as {last_status!r} after partially filling "
+                        f"{filled} @ {price:.2f} — recording the part that traded"
+                    )
+                    return price, filled
                 raise RuntimeError(
-                    f"order {order_id} ended as {status!r}: "
+                    f"order {order_id} ended as {last_status!r}: "
                     f"{data.get('status_message') or 'no reason given'}"
                 )
+
             if attempt < FILL_POLL_ATTEMPTS - 1:
                 time.sleep(FILL_POLL_DELAY_SECONDS)
 
         raise RuntimeError(
-            f"order {order_id} was accepted but no traded price appeared within "
-            f"{FILL_POLL_ATTEMPTS * FILL_POLL_DELAY_SECONDS:.1f}s — refusing to record a fill "
-            f"at an unknown price. Reconcile this order manually before trading further."
+            f"order {order_id} was accepted but did not reach a terminal status within "
+            f"{FILL_POLL_ATTEMPTS * FILL_POLL_DELAY_SECONDS:.1f}s (last status {last_status!r}). "
+            f"Refusing to record a fill at an unknown price — this order may still be live at "
+            f"the exchange, so reconcile it by hand before trading further."
         )
 
     def place_order(self, order: OrderRequest) -> Fill:
@@ -158,6 +197,7 @@ class UpstoxBroker(BrokerAdapter):
         response.raise_for_status()
         return True
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def get_positions(self) -> list[Position]:
         response = requests.get(POSITIONS_URL, headers=self._headers(), timeout=15)
         response.raise_for_status()
@@ -174,6 +214,7 @@ class UpstoxBroker(BrokerAdapter):
                 return position
         return Position(symbol=symbol, quantity=0, avg_price=0.0)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8))
     def get_funds(self) -> float:
         response = requests.get(FUNDS_URL, headers=self._headers(), timeout=15)
         response.raise_for_status()
