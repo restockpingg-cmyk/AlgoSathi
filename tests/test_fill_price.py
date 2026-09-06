@@ -177,3 +177,66 @@ def test_an_expired_token_fails_fast_instead_of_retrying(monkeypatch):
     with pytest.raises(uh.AuthRequiredError, match="cli_login"):
         provider.get_ltp("INFY", "NSE_EQ")
     assert len(calls) == 1
+
+
+# --- between-candle stop checks ----------------------------------------------
+
+
+def test_stop_fires_between_candles_without_waiting_for_a_close():
+    """The whole point of polling more often than the candle interval: a stop measured
+    against the live price exits a minute into a fall, not five."""
+    broker = PaperBroker(starting_cash=100_000.0)
+    w = SymbolWorker(
+        symbol="INFY",
+        strategy=AlwaysBuy(),
+        guard=PositionGuard(ExitRulesConfig(stop_loss_pct=1.0)),
+        broker=broker,
+        risk_manager=RiskManager(order_quantity=1, max_daily_loss=5000.0, max_open_positions=1),
+        quote=lambda: 1000.0,
+    )
+    w.poll(candles([1000.0, 1000.0]), datetime(2026, 3, 10, 10, 6), 0.0, entries_allowed=True)
+    assert broker.get_position("INFY").quantity == 1
+
+    # Price falls through the 1% stop (990) partway through the candle.
+    w.quote = lambda: 985.0
+    signal = w.check_stop_between_candles(datetime(2026, 3, 10, 10, 7), 0.0)
+
+    assert signal is not None and signal.signal_type is SignalType.EXIT
+    assert broker.get_position("INFY").quantity == 0
+
+
+def test_no_stop_check_and_no_quote_call_when_flat():
+    """A universe of flat symbols must cost nothing between candles."""
+    calls = []
+    broker = PaperBroker(starting_cash=100_000.0)
+    w = SymbolWorker(
+        symbol="INFY",
+        strategy=AlwaysBuy(),
+        guard=PositionGuard(ExitRulesConfig(stop_loss_pct=1.0)),
+        broker=broker,
+        risk_manager=RiskManager(order_quantity=1, max_daily_loss=5000.0, max_open_positions=1),
+        quote=lambda: calls.append(1) or 900.0,
+    )
+
+    assert w.check_stop_between_candles(datetime(2026, 3, 10, 10, 7), 0.0) is None
+    assert calls == []
+
+
+def test_a_failing_quote_between_candles_is_not_fatal():
+    broker = PaperBroker(starting_cash=100_000.0)
+    w = SymbolWorker(
+        symbol="INFY",
+        strategy=AlwaysBuy(),
+        guard=PositionGuard(ExitRulesConfig(stop_loss_pct=1.0)),
+        broker=broker,
+        risk_manager=RiskManager(order_quantity=1, max_daily_loss=5000.0, max_open_positions=1),
+        quote=lambda: 1000.0,
+    )
+    w.poll(candles([1000.0, 1000.0]), datetime(2026, 3, 10, 10, 6), 0.0, entries_allowed=True)
+
+    def broken():
+        raise ConnectionError("quote down")
+
+    w.quote = broken
+    assert w.check_stop_between_candles(datetime(2026, 3, 10, 10, 7), 0.0) is None
+    assert broker.get_position("INFY").quantity == 1  # still held, candle poll will catch up

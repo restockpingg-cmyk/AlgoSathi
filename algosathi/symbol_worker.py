@@ -170,6 +170,53 @@ class SymbolWorker:
             self._on_fill(fill)
         return signal
 
+    def check_stop_between_candles(self, now: datetime, realized_pnl_today: float) -> Signal | None:
+        """Re-check stops against the live price without waiting for a candle to close.
+
+        Between candle closes the strategy cannot change its mind and the last closed candle
+        does not move, so a poll that only looks at candles decides nothing. The live price
+        does move, and a stop measured against it turns those otherwise idle polls into the
+        difference between exiting a minute into a fall and exiting five minutes into it.
+
+        Does nothing unless a position is open, so a universe of flat symbols costs no quote
+        calls at all.
+        """
+        if not self.guard.is_armed or self.quote is None:
+            return None
+
+        try:
+            price = self.quote()
+        except Exception as exc:  # noqa: BLE001 — the candle poll will catch up regardless
+            logger.warning(f"{self.symbol}: stop check skipped, no live price — {exc}")
+            return None
+        if not price:
+            return None
+
+        self.last_price = price
+        if isinstance(self.broker, PaperBroker):
+            self.broker.update_market_price(self.symbol, price)
+
+        # A single price stands in for the bar's low and high: this is a point-in-time look,
+        # not a completed candle.
+        triggered = self.guard.check(price, now)
+        if triggered is None:
+            return None
+
+        logger.warning(f"{self.symbol}: {triggered.reason} (between candles)")
+        signal = Signal(
+            symbol=self.symbol,
+            signal_type=SignalType.EXIT,
+            reason=triggered.reason,
+            timestamp=now,
+        )
+        fill = act_on_signal(
+            signal, self.symbol, self.risk_manager, self.broker, realized_pnl_today, price
+        )
+        self.acted = fill is not None
+        if fill is not None:
+            self._on_fill(fill)
+        return signal
+
     def _on_fill(self, fill: Fill) -> None:
         if fill.side is Side.BUY:
             self.guard.on_entry(fill.price)

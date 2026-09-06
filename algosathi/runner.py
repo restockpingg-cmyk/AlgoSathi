@@ -21,6 +21,7 @@ from algosathi.persistence.supabase_strategies import fetch_active_strategy
 from algosathi.persistence.supabase_sync import push_fill
 from algosathi.risk.position_guard import PositionGuard
 from algosathi.risk.risk_manager import RiskManager
+from algosathi.schedule import next_candle_poll, seconds_until
 from algosathi.simulation import act_on_signal, simulate_candles
 from algosathi.strategy.base import Strategy
 from algosathi.symbol_worker import SymbolWorker
@@ -252,7 +253,32 @@ def run_live(settings: Settings) -> None:
                 worker.last_error = f"{type(exc).__name__}: {exc}"
 
         heartbeat(market_open=True)
-        time.sleep(settings.yaml.polling_interval_seconds)
+
+        # Wait for the next candle boundary rather than a fixed interval from now. A plain
+        # sleep would anchor every poll to whatever second the process started on and drift
+        # further out of phase with each cycle, since the sleep begins after the work.
+        target = next_candle_poll(datetime.now(), settings.yaml.candle_interval_minutes)
+        logger.debug(f"Next candle poll at {target:%H:%M:%S}")
+
+        # Don't just sleep through the gap. The strategy cannot change between candle closes,
+        # but the price can, so keep checking stops against the live price on the polling
+        # interval — the difference between exiting a minute into a fall and five minutes in.
+        # Only symbols actually holding a position cost a quote call.
+        while True:
+            remaining = seconds_until(target, datetime.now())
+            if remaining <= 0:
+                break
+            time.sleep(min(settings.yaml.polling_interval_seconds, remaining))
+            if seconds_until(target, datetime.now()) <= 0:
+                break
+            for worker in workers:
+                try:
+                    signal = worker.check_stop_between_candles(datetime.now(), pnl_today)
+                    if signal is not None:
+                        push_signal(settings, signal, worker.last_price, acted=worker.acted)
+                except Exception as exc:  # noqa: BLE001 — one symbol must not stop the rest
+                    logger.exception(f"{worker.symbol}: stop check failed")
+                    worker.last_error = f"{type(exc).__name__}: {exc}"
 
 
 def _load_csv(path: str) -> pd.DataFrame:
